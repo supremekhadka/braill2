@@ -52,6 +52,25 @@ def build_dataset(raw_dataset_path, target_image_path, target_label_path):
                     if Path(k).suffix in ['.txt'] and os.path.basename(k).rsplit("+",1)[1].split(".")[0] == "recto": 
                         shutil.copy(os.path.join(raw_dataset_path, i, j, k), os.path.join(target_label_path, f"{prefix}_{k}"))
                 
+def parse_angelina(label_path):
+    rows=[]
+    with open(label_path, 'r') as file:
+        for line in file:
+            line=line.strip()
+            if line:
+                x1, y1, x2, y2, c = line.split(';')
+                width = (float(x2)) - float(x1)    
+                height = float(y2) - float(y1)
+                x_c = float(x1) + width / 2
+                y_c = float(y1) + height / 2
+
+                rows.append([x_c, y_c, width, height, c])
+    
+    with open("annotation_name.txt", 'w') as file:        
+        for row in rows:
+            file.write(' '.join(map(str, row)) + '\n')
+
+
 
 if __name__ == '__main__':
     for i in os.listdir(RAW_DATASETS_PATH):
