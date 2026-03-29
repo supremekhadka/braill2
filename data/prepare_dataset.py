@@ -74,9 +74,14 @@ def parse_dsbi(label_path):
 
         width = x2 - x1
         height = y2 - y1
+
+
         x_c = x1 + width / 2
         y_c = y1 + height / 2
 
+        width += 0.8 * width # add 80% of the grid width
+        height += 0.5 * height # add 50% of the grid height
+        
         parsed_lines.append([c, x_c, y_c, width, height])
 
     return parsed_lines  
