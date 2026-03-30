@@ -35,6 +35,7 @@ def parse_angelina(label_path):
                 height = float(y2) - float(y1)
                 x_c = float(x1) + width / 2
                 y_c = float(y1) + height / 2
+                c = int(c) - 1
 
                 parsed_lines.append([c, x_c, y_c, width, height])
     
@@ -72,6 +73,11 @@ def parse_dsbi(label_path):
         dots = ''.join(parts[2:][::-1])
         c = int(dots, 2)
 
+        # Skip if the cell is empty (annot == 000000)
+        if c == 0:
+            continue
+
+        c = c - 1 # convert to 0-based index
         width = x2 - x1
         height = y2 - y1
 
