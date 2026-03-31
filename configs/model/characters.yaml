@@ -1,7 +1,7 @@
 path: ../data/dataset
-train: images/train
-val: images/val
-test: images/test
+train: images/characters/train
+val: images/characters/val
+test: images/characters/test
 
 names:
   0: "100000"

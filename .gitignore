@@ -1,4 +1,4 @@
-raw-datasets
-data/dataset
+data
 runs
 weights
+__pycache__/

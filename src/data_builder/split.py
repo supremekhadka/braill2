@@ -9,13 +9,13 @@ TRAIN_RATIO=0.6
 VAL_RATIO=0.2
 TEST_RATIO=0.2
 
-DATASET_PATH = "../data/dataset"
+DATASET_PATH = "./dataset"
 
 random.seed(SEED)
 
-def validate_dataset(dataset_path):
-    images = set(os.listdir(os.path.join(dataset_path, "images")))
-    labels = set(os.listdir(os.path.join(dataset_path, "labels")))
+def validate_raw_dataset(images_dir, labels_dir):
+    images = set(os.listdir(images_dir))
+    labels = set(os.listdir(labels_dir))
 
     image_basenames = set([os.path.splitext(img)[0] for img in images])
     label_basenames = set([os.path.splitext(lbl)[0] for lbl in labels])
@@ -32,33 +32,40 @@ def validate_dataset(dataset_path):
     
     return True
 
-def split(dataset_path, train_ratio, val_ratio, test_ratio):
+def split_dataset(dataset_dir, angelina_prefix, dsbi_prefix, train_ratio=0.6, val_ratio=0.2, test_ratio=0.2, seed=42):
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6
+    random.seed(seed)
 
-    images_dir = os.path.join(dataset_path, "images")
-    labels_dir = os.path.join(dataset_path, "labels")
+    images_dir = os.path.join(dataset_dir, "images")
+    labels_dir = os.path.join(dataset_dir, "labels")
+
+    if not validate_raw_dataset(images_dir, labels_dir):
+        raise ValueError(f"Dataset validation failed for {dataset_dir}")
 
     ang, dsbi = [], []
 
     for img in os.listdir(images_dir):
+        # Skip directories if script is re-run
+        if os.path.isdir(os.path.join(images_dir, img)):
+            continue
+            
         img_path = os.path.join(images_dir, img)
         lbl_path = os.path.join(labels_dir, Path(img).stem + ".txt")
 
-        if img.startswith("ANG_"):
+        if img.startswith(f"{angelina_prefix}_"):
             ang.append((img_path, lbl_path))
-        elif img.startswith("DSBI_"):
+        elif img.startswith(f"{dsbi_prefix}_"):
             dsbi.append((img_path, lbl_path))
 
     def split_group(group):
-        train, val, test = [], [], []
-        for item in group:
-            r = random.random()
-            if r < train_ratio:
-                train.append(item)
-            elif r < train_ratio + val_ratio:
-                val.append(item)
-            else:
-                test.append(item)
+        random.shuffle(group)
+        n = len(group)
+        train_end = int(n * train_ratio)
+        val_end = train_end + int(n * val_ratio)
+        
+        train = group[:train_end]
+        val = group[train_end:val_end]
+        test = group[val_end:]
         return train, val, test
 
     train_a, val_a, test_a = split_group(ang)
@@ -80,9 +87,3 @@ def split(dataset_path, train_ratio, val_ratio, test_ratio):
     move_files(train, "train")
     move_files(val, "val")
     move_files(test, "test")
-
-if __name__ == "__main__":
-    if not validate_dataset(DATASET_PATH):
-        print("Dataset validation failed. Please fix the issues and try again.")
-    else:
-        split(DATASET_PATH, TRAIN_RATIO, VAL_RATIO, TEST_RATIO)
