@@ -1,7 +1,7 @@
 path: ../data/dataset
-train: images/cells/train
-val: images/cells/val
-test: images/cells/test
+train: cells/images/train
+val: cells/images/val
+test: cells/images/test
 
 names:
   0: "Cell"
