@@ -1,14 +1,72 @@
 # Braill. 2
 
-## Build Dataset
+A Braille Detection and Translation System based on Object Detection.
 
-In the root directory,
+### Environment Setup
+
+#### Create Environment
+
+We use python version 3.12.
+
+Conda:
+
+```
+conda create -n braill2 python=3.12
+```
+
+or,
+
+Venv:
+
+```
+python -3.12 -m venv venv
+```
+
+#### Activate Environment
+
+If using Conda:
+
+```
+conda activate braill2
+```
+
+or,
+
+If using Venv:
+
+On Windows:
+
+```
+venv/Source/activate
+```
+
+On MacOS / Linux:
+
+```
+source venv/bin/activate
+```
+
+#### Install Requirements
+
+```
+pip install requirements.txt
+```
+
+### Raw Dataset
+
+- Download Angelina Dataset from https://github.com/IlyaOvodov/AngelinaDataset
+- and, DSBI Dataset from https://github.com/IlyaOvodov/AngelinaDataset
+- Place the extracted folders inside `data/raw` directory.
+
+### Build Dataset
+
+In the root directory, run the build command as a module:
 
 ```
 python -m src.build_dataset.main
 ```
 
-## Train Model
+### Train Model
 
 To train on cells:
 
@@ -22,7 +80,7 @@ To train on characters:
 python train.py --target characters --model yolo26n.pt --epochs 100 --batch 8 --imgsz 640 --device 0
 ```
 
-To fine-tune on cells-trained model on characters dataset:
+To fine-tune model trained on cells with the characters dataset:
 
 ```
 python train.py --target characters --model runs/cells_run/weights/best.pt --epochs 100 --batch 8 --imgsz 640 --device 0

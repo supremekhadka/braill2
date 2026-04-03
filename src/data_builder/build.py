@@ -88,12 +88,12 @@ def parse_dsbi_character(label_path):
             continue
 
         c = c - 1 # convert to 0-based index
-        width = x2 - x1
-        height = y2 - y1
+        width = float(x2) - float(x1)
+        height = float(y2) - float(y1)
 
 
-        x_c = x1 + width / 2
-        y_c = y1 + height / 2
+        x_c = float(x1) + width / 2
+        y_c = float(y1) + height / 2
 
         width += 0.8 * width # add 80% of the grid width
         height += 0.5 * height # add 50% of the grid height
@@ -140,12 +140,12 @@ def parse_dsbi_cell(label_path):
         # class bbox = 0
         c = 0
 
-        width = x2 - x1
-        height = y2 - y1
+        width = float(x2) - float(x1)
+        height = float(y2) - float(y1)
 
 
-        x_c = x1 + width / 2
-        y_c = y1 + height / 2
+        x_c = float(x1) + width / 2
+        y_c = float(y1) + height / 2
 
         width += 0.8 * width # add 80% of the grid width
         height += 0.5 * height # add 50% of the grid height
