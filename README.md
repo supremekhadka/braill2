@@ -55,7 +55,7 @@ pip install requirements.txt
 ### Raw Dataset
 
 - Download Angelina Dataset from https://github.com/IlyaOvodov/AngelinaDataset
-- and, DSBI Dataset from https://github.com/IlyaOvodov/AngelinaDataset
+- and, DSBI Dataset from https://github.com/yeluo1994/DSBI
 - Place the extracted folders inside `data/raw` directory.
 
 ### Build Dataset
