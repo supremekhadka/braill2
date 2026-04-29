@@ -1,0 +1,176 @@
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:math';
+import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
+
+class Detection {
+  final double x1, y1, x2, y2;
+  final double confidence;
+  final int classId;
+
+  const Detection({
+    required this.x1,
+    required this.y1,
+    required this.x2,
+    required this.y2,
+    required this.confidence,
+    required this.classId,
+  });
+}
+
+enum InferenceBackend { gpu, nnapi, cpu }
+
+class TfliteService {
+  static const int inputSize = 640;
+  static const double confidenceThreshold = 0.5;
+  static const int maxDetections = 300;
+
+  Interpreter? _interpreter;
+  InferenceBackend _activeBackend = InferenceBackend.cpu;
+
+  InferenceBackend get activeBackend => _activeBackend;
+
+  static String classIdToLabel(int classId) {
+    final binary = (classId + 1).toRadixString(2).padLeft(6, '0');
+    return binary.split('').reversed.join();
+  }
+
+  // Delegate probe order: GPU -> NNAPI (Android only) -> CPU
+  // Each tier is attempted by actually constructing an Interpreter.
+  // If it throws we fall through to the next tier.
+  Future<void> loadModel() async {
+    const asset = 'assets/models/best_float32.tflite';
+
+    // Tier 1: GPU delegate (OpenGL ES 3.1+ / Metal on iOS)
+    try {
+      final opts = InterpreterOptions()..addDelegate(GpuDelegate());
+      _interpreter = await Interpreter.fromAsset(asset, options: opts);
+      _activeBackend = InferenceBackend.gpu;
+      _log('Delegate: GPU');
+      return;
+    } catch (e) {
+      _log('GPU unavailable: $e');
+    }
+
+    // Tier 2: NNAPI - routes to Tensor G1 NPU/DSP on Pixel 6 (Android only)
+    if (Platform.isAndroid) {
+      try {
+        final opts = InterpreterOptions()..useNnApiForAndroid = true;
+        _interpreter = await Interpreter.fromAsset(asset, options: opts);
+        _activeBackend = InferenceBackend.nnapi;
+        _log('Delegate: NNAPI');
+        return;
+      } catch (e) {
+        _log('NNAPI unavailable: $e');
+      }
+    }
+
+    // Tier 3: plain CPU - always works
+    try {
+      _interpreter = await Interpreter.fromAsset(asset);
+      _activeBackend = InferenceBackend.cpu;
+      _log('Delegate: CPU');
+    } catch (e) {
+      _log('CPU load failed: $e');
+      rethrow;
+    }
+  }
+
+  void dispose() => _interpreter?.close();
+
+  Float32List _preprocessImage(img.Image image) {
+    final scale = min(inputSize / image.width, inputSize / image.height);
+    final newW = (image.width * scale).round();
+    final newH = (image.height * scale).round();
+    final padX = ((inputSize - newW) / 2).round();
+    final padY = ((inputSize - newH) / 2).round();
+
+    final resized = img.copyResize(image, width: newW, height: newH);
+    final canvas = img.Image(width: inputSize, height: inputSize);
+    img.fill(canvas, color: img.ColorRgb8(114, 114, 114));
+    img.compositeImage(canvas, resized, dstX: padX, dstY: padY);
+
+    final input = Float32List(inputSize * inputSize * 3);
+    int idx = 0;
+    for (int y = 0; y < inputSize; y++) {
+      for (int x = 0; x < inputSize; x++) {
+        final pixel = canvas.getPixel(x, y);
+        input[idx++] = pixel.r / 255.0;
+        input[idx++] = pixel.g / 255.0;
+        input[idx++] = pixel.b / 255.0;
+      }
+    }
+    return input;
+  }
+
+  List<Detection> _parseOutput(
+    List<List<double>> output,
+    int origWidth,
+    int origHeight,
+  ) {
+    final scale = min(inputSize / origWidth, inputSize / origHeight);
+    final newW = (origWidth * scale).round();
+    final newH = (origHeight * scale).round();
+    final padX = ((inputSize - newW) / 2) / inputSize;
+    final padY = ((inputSize - newH) / 2) / inputSize;
+    final activeW = newW / inputSize;
+    final activeH = newH / inputSize;
+
+    final detections = <Detection>[];
+    for (int i = 0; i < maxDetections; i++) {
+      final det = output[i];
+      final confidence = det[4];
+      if (confidence < confidenceThreshold) continue;
+
+      final x1 = ((det[0] - padX) / activeW).clamp(0.0, 1.0);
+      final y1 = ((det[1] - padY) / activeH).clamp(0.0, 1.0);
+      final x2 = ((det[2] - padX) / activeW).clamp(0.0, 1.0);
+      final y2 = ((det[3] - padY) / activeH).clamp(0.0, 1.0);
+
+      detections.add(
+        Detection(
+          x1: x1,
+          y1: y1,
+          x2: x2,
+          y2: y2,
+          confidence: confidence,
+          classId: det[5].round(),
+        ),
+      );
+    }
+
+    detections.sort((a, b) => b.confidence.compareTo(a.confidence));
+    return detections;
+  }
+
+  Future<List<Detection>> runInference(img.Image image) async {
+    if (_interpreter == null) throw StateError('Model not loaded');
+
+    final input = _preprocessImage(image);
+    final outputBuffer = List.generate(
+      1,
+      (_) => List.generate(maxDetections, (_) => List.filled(6, 0.0)),
+    );
+
+    _interpreter!.run(
+      input.reshape([1, inputSize, inputSize, 3]),
+      outputBuffer,
+    );
+
+    return _parseOutput(outputBuffer[0], image.width, image.height);
+  }
+
+  Future<List<Detection>> runInferenceFromEncodedBytes(Uint8List bytes) async {
+    final image = img.decodeImage(bytes);
+    if (image == null) throw Exception('Could not decode image');
+    return runInference(image);
+  }
+
+  Future<List<Detection>> runInferenceFromFile(File file) async {
+    final bytes = await file.readAsBytes();
+    return runInferenceFromEncodedBytes(bytes);
+  }
+
+  void _log(String msg) => print('[TfliteService] $msg');
+}
