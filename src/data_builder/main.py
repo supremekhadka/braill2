@@ -34,18 +34,17 @@ def main():
             )
 
     print("Splitting dataset into train/val/test...")
-    for sub_dataset in ["cells", "characters"]:
-        dataset_dir = os.path.join(args.target_path, sub_dataset)
-        if os.path.exists(dataset_dir):
-            print(f"Splitting {sub_dataset}...")
-            split_dataset(
-                dataset_dir=dataset_dir,
-                angelina_prefix=args.angelina_prefix,
-                dsbi_prefix=args.dsbi_prefix,
-                train_ratio=0.6, 
-                val_ratio=0.2, 
-                test_ratio=0.2
-            )
+   
+    dataset_dir = os.path.join(args.target_path)
+    if os.path.exists(dataset_dir):
+        split_dataset(
+            dataset_dir=dataset_dir,
+            angelina_prefix=args.angelina_prefix,
+            dsbi_prefix=args.dsbi_prefix,
+            train_ratio=0.6, 
+            val_ratio=0.2, 
+            test_ratio=0.2
+        )
             
     print("Pipeline complete! Dataset is ready at:", args.target_path)
 

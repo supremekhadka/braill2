@@ -63,7 +63,7 @@ pip install requirements.txt
 In the root directory, run the build command as a module:
 
 ```
-python -m src.build_dataset.main
+python -m src.data_builder.main
 ```
 
 ### Train Model
