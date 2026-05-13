@@ -1,31 +1,12 @@
 import 'package:flutter/material.dart';
 import 'tflite_service.dart';
+import 'sahi_service.dart';
 
-/// Paints bounding boxes from [detections] onto a [CustomPaint] canvas.
-///
-/// The painter handles two coordinate transforms:
-///
-///  1. **BoxFit letterbox/cover** — maps normalised detection coords into the
-///     rendered image rect inside the widget (offsetX/Y + scale).
-///
-///  2. **Sensor rotation** — when [sensorRotation] is non-zero the model ran
-///     on an *unrotated* (e.g. landscape) frame, but the canvas represents the
-///     *rotated* (portrait) preview. The painter rotates the canvas before
-///     drawing so boxes land correctly without the caller having to rotate the
-///     entire image.
-///
-/// Pass [sensorRotation] = 0 when the image fed to the model has already been
-/// rotated to match the preview orientation (e.g. capture screen / static image).
 class BBoxPainter extends CustomPainter {
-  final List<Detection> detections;
-  final double imageWidth; // width  of the image the model processed
-  final double imageHeight; // height of the image the model processed
+  final List<SlicedDetection> detections;
+  final double imageWidth;
+  final double imageHeight;
   final BoxFit fit;
-
-  /// Clockwise degrees the raw sensor image is rotated relative to the
-  /// on-screen preview.  Typical values: 0, 90, 180, 270.
-  /// When non-zero the painter applies an inverse canvas rotation so that
-  /// boxes drawn in sensor-space land correctly on the rotated preview.
   final int sensorRotation;
   final bool isFrontCamera;
 
@@ -37,8 +18,6 @@ class BBoxPainter extends CustomPainter {
     this.sensorRotation = 0,
     this.isFrontCamera = false,
   });
-
-  // ── Paints ─────────────────────────────────────────────────────────────────
 
   static final _boxPaint = Paint()
     ..style = PaintingStyle.stroke
@@ -55,42 +34,27 @@ class BBoxPainter extends CustomPainter {
     fontWeight: FontWeight.bold,
   );
 
-  // ── paint ──────────────────────────────────────────────────────────────────
-
   @override
   void paint(Canvas canvas, Size size) {
     if (detections.isEmpty) return;
 
-    // When sensorRotation != 0 the image the model processed is in a different
-    // orientation than the canvas.  We rotate the canvas so we can draw in
-    // "model image space" and have it appear correctly on screen.
-    //
-    // Strategy: translate to canvas centre, rotate by -sensorRotation (undo
-    // the sensor rotation), translate back, then draw as if the canvas were
-    // the unrotated image.  We also swap width/height for the letterbox calc
-    // when the image is rotated 90/270°.
     final bool rotated90or270 = sensorRotation == 90 || sensorRotation == 270;
-
-    // The "effective" canvas dimensions in model-image space
     final double canvasW = rotated90or270 ? size.height : size.width;
     final double canvasH = rotated90or270 ? size.width : size.height;
 
     canvas.save();
 
-    // 1. Undo sensor rotation (same as before)
     if (sensorRotation != 0) {
       canvas.translate(size.width / 2, size.height / 2);
       canvas.rotate(-sensorRotation * (3.141592653589793 / 180));
       canvas.translate(-canvasW / 2, -canvasH / 2);
     }
 
-    // 2. Mirror for front camera (IMPORTANT)
     if (isFrontCamera) {
       canvas.translate(canvasW, 0);
       canvas.scale(-1, 1);
     }
 
-    // ── letterbox / cover geometry (in model-image space) ──────────────────
     final effectiveSize = Size(canvasW, canvasH);
     final imageAspect = imageWidth / imageHeight;
     final widgetAspect = effectiveSize.width / effectiveSize.height;
@@ -106,7 +70,6 @@ class BBoxPainter extends CustomPainter {
         renderHeight = effectiveSize.width / imageAspect;
       }
     } else {
-      // contain / default
       if (imageAspect > widgetAspect) {
         renderWidth = effectiveSize.width;
         renderHeight = effectiveSize.width / imageAspect;
@@ -119,19 +82,23 @@ class BBoxPainter extends CustomPainter {
     offsetX = (effectiveSize.width - renderWidth) / 2;
     offsetY = (effectiveSize.height - renderHeight) / 2;
 
-    // ── draw each detection ────────────────────────────────────────────────
     for (final det in detections) {
+      // bbox coords are absolute pixels — normalise to [0,1] for rendering
+      final x1 = det.bbox.x1 / imageWidth;
+      final y1 = det.bbox.y1 / imageHeight;
+      final x2 = det.bbox.x2 / imageWidth;
+      final y2 = det.bbox.y2 / imageHeight;
+
       final rect = Rect.fromLTRB(
-        offsetX + det.x1 * renderWidth,
-        offsetY + det.y1 * renderHeight,
-        offsetX + det.x2 * renderWidth,
-        offsetY + det.y2 * renderHeight,
+        offsetX + x1 * renderWidth,
+        offsetY + y1 * renderHeight,
+        offsetX + x2 * renderWidth,
+        offsetY + y2 * renderHeight,
       );
 
       canvas.drawRect(rect, _boxPaint);
 
-      final label =
-          'C${det.classId}  ${(det.confidence * 100).toStringAsFixed(0)}%';
+      final label = TfliteService.classIdToLabel(det.classId);
       final tp = TextPainter(
         text: TextSpan(text: label, style: _textStyle),
         textDirection: TextDirection.ltr,

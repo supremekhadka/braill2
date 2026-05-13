@@ -276,13 +276,13 @@ class _RealtimeScreenState extends State<RealtimeScreen> {
             child: AspectRatio(
               aspectRatio: displayAspect,
               child: CustomPaint(
-                painter: BBoxPainter(
-                  detections: _detections,
-                  imageWidth: _frameWidth,
-                  imageHeight: _frameHeight,
-                  fit: BoxFit.contain,
-                  sensorRotation: _sensorRotation,
-                ),
+                // painter: BBoxPainter(
+                //   detections: _detections,
+                //   imageWidth: _frameWidth,
+                //   imageHeight: _frameHeight,
+                //   fit: BoxFit.contain,
+                //   sensorRotation: _sensorRotation,
+                // ),
               ),
             ),
           ),
