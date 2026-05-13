@@ -8,12 +8,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Train a YOLO model."
     )
 
-    parser.add_argument("--model", type=str, default="yolo26s.pt")
+    parser.add_argument("--model", type=str, default="yolo26n.pt")
     parser.add_argument("--data", type=str, default="configs/data.yaml")
 
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--imgsz", type=int, default=640)
-    parser.add_argument("--batch", type=int, default=4)
+    parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", default=0)
     parser.add_argument("--workers", type=int, default=4)
 

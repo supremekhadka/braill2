@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import random
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -15,25 +14,33 @@ class BrailleGenerator:
     def __init__(
         self,
         img_size: tuple[int, int] = (1448, 1024),
-        scale: int = 5,
+        scale: float | None = None,
+        small_scale_ratio: float = 0.35,
         bbox_pad_mm: float = 0.25,
     ) -> None:
         self.img_size = img_size
         self.scale = scale
+        if scale is None:
+            if random.random() < small_scale_ratio:
+                self.scale = random.uniform(3.2, 4.0)   # ~15 px cell width
+            else:
+                self.scale = random.uniform(4.5, 5.5)   # ~22–30 px cell width
+        else:
+            self.scale = scale
         self.bbox_pad = bbox_pad_mm * self.scale
 
-        # Standard Marburg Medium dimensions (mm -> pixels)
+        # Standard Marburg Medium dimensions (mm to pixels)
         self.dot_rad   = (1.5 / 2) * self.scale
-        self.px_h_dot  = 2.5 * self.scale   # horizontal dot pitch
-        self.px_v_dot  = 2.5 * self.scale   # vertical dot pitch
-        self.px_cell_w = 6.0 * self.scale   # cell width
-        self.px_line_h = 10.0 * self.scale  # line height
+        self.px_h_dot  = 2.5 * self.scale   
+        self.px_v_dot  = 2.5 * self.scale   
+        self.px_cell_w = 6.0 * self.scale   
+        self.px_line_h = 10.0 * self.scale  
 
     def id_to_bits(self, char_id: int) -> str:
         """Convert a 0-based character index to a 6-bit Braille dot string."""
         char_id = max(0, min(62, char_id))
         binary = format(char_id + 1, "06b")
-        return binary[::-1]  # LSB first -> dot 1 at index 0
+        return binary[::-1]  # LSB first: dot 1 at index 0
 
     def create_soft_bump(self, radius: float) -> np.ndarray:
         """Return a cosine-shaped height kernel for a single Braille dot."""
