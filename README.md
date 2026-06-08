@@ -39,7 +39,7 @@ source venv/bin/activate
 
 ```
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install requirements.txt
+pip install -r requirements.txt
 ```
 
 ### Raw Dataset
@@ -53,18 +53,18 @@ pip install requirements.txt
 In the root directory, run the build command as a module:
 
 ```
-python -m src.data_builder.main --num-synthetic 400
+python -m vision.data_builder.main --num-synthetic 400
 ```
 
 ### Train Model
 
 ```
-python -m src.training.train
+python -m vision.training.train
 ```
 
 ### Predict
 ```
-python -m src.inference.predict --image /path/to/image --visualize
+python -m vision.inference.predict --image /path/to/image --visualize
 ```
 ## Citations
 
