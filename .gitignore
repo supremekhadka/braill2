@@ -4,3 +4,5 @@ weights
 __pycache__/
 venv
 *.pt
+experiments
+.env
