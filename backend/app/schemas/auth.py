@@ -1,3 +1,4 @@
+from uuid import UUID
 from pydantic import BaseModel, EmailStr
 
 class SignupRequest(BaseModel):
@@ -13,4 +14,4 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 class TokenData(BaseModel):
-    user_id: int
+    user_id: UUID

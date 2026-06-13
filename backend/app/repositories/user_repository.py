@@ -1,7 +1,8 @@
 from sqlmodel import Session, select, or_
+from uuid import UUID
 
 from backend.app.models.user import User
-from backend.app.core.config import settings
+from backend.app.core.configs import settings
 
 database_url = settings.database_url
 
@@ -18,7 +19,7 @@ def create_user(session: Session, email: str, username: str, password_hash: str)
 
     return user
 
-def get_user_by_id(session: Session, user_id: int) -> User:
+def get_user_by_id(session: Session, user_id: UUID) -> User:
     statement = select(User).where(User.id == user_id)
     return session.exec(statement).first()
 

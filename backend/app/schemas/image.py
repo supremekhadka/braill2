@@ -1,9 +1,9 @@
 from datetime import datetime
+from uuid import UUID
 from pydantic import BaseModel, ConfigDict 
 
 class ImageResponse(BaseModel):
-    id: int
-    user_id: str
+    id: UUID
     image_path: str
     uploaded_at: datetime
 

@@ -2,21 +2,21 @@ from typing import Annotated
 
 import jwt
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlmodel import Session
 from jwt.exceptions import InvalidTokenError
 
 from backend.app.core.database import get_session
 from backend.app.models.user import User
 from backend.app.repositories.user_repository import get_user_by_id
-from backend.app.core.config import settings
+from backend.app.core.configs import settings
 from backend.app.schemas.auth import TokenData
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login-oauth")
+auth_scheme = HTTPBearer()
 
 def get_current_user(
         session: Annotated[Session, Depends(get_session)], 
-        token: Annotated[str, Depends(oauth2_scheme)]
+        token: Annotated[HTTPAuthorizationCredentials, Depends(auth_scheme)]
     ) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -25,7 +25,7 @@ def get_current_user(
     )
 
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(token.credentials, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         sub = payload.get("sub")
 
         if sub is None:

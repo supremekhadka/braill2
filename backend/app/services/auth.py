@@ -5,7 +5,7 @@ import jwt
 from fastapi import HTTPException, status
 from sqlmodel import Session
 
-from backend.app.core.config import settings
+from backend.app.core.configs import settings
 from backend.app.models.user import User
 from backend.app.repositories.user_repository import create_user, get_user_by_email, get_user_by_identifier
 from backend.app.schemas.auth import TokenResponse
