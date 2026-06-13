@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from .models import BBox, Sample
+from .schemas import BBox, Sample
 
 def read_label_file(label_path: str) -> list[BBox]:
     """Parse a YOLO .txt label file and return a list of BBox objects."""

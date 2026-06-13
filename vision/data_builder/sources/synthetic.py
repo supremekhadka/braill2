@@ -6,8 +6,8 @@ import random
 import cv2
 import numpy as np
 
-from ..formats.models import BBox, Sample
-from ..formats.yolo_io import write_label_file
+from ..schemas import BBox, Sample
+from ..file_utils import write_label_file
 
 
 class BrailleGenerator:

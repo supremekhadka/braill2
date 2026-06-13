@@ -4,8 +4,8 @@ from typing import Iterator
 
 import cv2
 
-from .formats.models import BBox
-from .formats.yolo_io import read_label_file, write_label_file
+from .schemas import BBox
+from .file_utils import read_label_file, write_label_file
 
 
 class BrailleCropper:

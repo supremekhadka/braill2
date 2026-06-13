@@ -6,7 +6,7 @@ import shutil
 from collections import defaultdict
 from pathlib import Path
 
-from .formats.yolo_io import validate_dataset_dir
+from .file_utils import validate_dataset_dir
 
 DEFAULT_TRAIN_RATIO = 0.65
 DEFAULT_VAL_RATIO   = 0.2

@@ -4,8 +4,8 @@ import os
 import shutil
 from pathlib import Path
 
-from ..formats.models import BBox, Sample
-from ..formats.yolo_io import write_label_file
+from ..schemas import BBox, Sample
+from ..file_utils import write_label_file
 
 _ANGELINA_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 _ANGELINA_LABEL_EXT = ".csv"
