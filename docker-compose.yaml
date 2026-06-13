@@ -1,7 +1,7 @@
 services:
   postgres:
     container_name: braill2-postgres
-    image: postgres:15
+    image: postgres:17
     restart: unless-stopped
     ports:
       - "${POSTGRES_PORT}:5432"

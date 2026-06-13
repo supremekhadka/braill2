@@ -6,3 +6,4 @@ venv
 *.pt
 experiments
 .env
+storage/
