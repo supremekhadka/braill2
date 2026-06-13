@@ -1,153 +1,81 @@
-from __future__ import annotations
-
 import argparse
-from pathlib import Path
 
-import cv2
-import torch
-import yaml
-from sahi import AutoDetectionModel
-from sahi.predict import get_sliced_prediction
+from .pipeline import pipeline
+from .utils.file_utils import write_text, write_image
+from .utils.visualization import render_from_json
 
-with open("configs/model/characters.yaml", "r") as f:
-    data = yaml.safe_load(f)
-
-ID_TO_NAME = data["names"]
-
-DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-DEFAULT_CFG = {
+INFERENCE_CONFIG = {
+    "model": "runs/train/weights/best.pt",
+    "image": "path/to/image",
+    "out_text": "data/output/text.txt",
+    "out_img": "data/output/vis.jpg",
     "slice_size": 640,
     "overlap": 0.1,
     "confidence": 0.4,
-    "device": DEFAULT_DEVICE,
+    "nms_iou": 0.1,
+    "label_mode": "en",
+    "visualize": False,
+    "binary_map": "configs/data.yaml",
+    "braille_map": "configs/braille.yaml",
+    "label_map": "configs/braille.yaml"
 }
-
-
-def get_default_image() -> str:
-    p = Path("data/split/images/test")
-    if not p.exists():
-        return ""
-
-    imgs = sorted([x for x in p.iterdir() if x.suffix.lower() in {".jpg", ".png", ".jpeg"}])
-    return str(imgs[0]) if imgs else ""
 
 
 def build_parser():
     p = argparse.ArgumentParser()
 
-    p.add_argument("--model", type=str, default="runs/train/weights/best.pt")
-    p.add_argument("--image", type=str, default=get_default_image())
+    p.add_argument("--model", type=str, default=INFERENCE_CONFIG["model"])
+    p.add_argument("--image", type=str, default=INFERENCE_CONFIG["image"])
 
-    p.add_argument("--out-txt", type=str, default="data/output/preds.txt")
-    p.add_argument("--out-img", type=str, default="data/output/vis.jpg")
+    p.add_argument("--out-text", type=str, default=INFERENCE_CONFIG["out_text"])
+    p.add_argument("--out-img", type=str, default=INFERENCE_CONFIG["out_img"])
 
-    p.add_argument("--slice-size", type=int, default=640)
-    p.add_argument("--overlap", type=float, default=0.1)
-    p.add_argument("--confidence", type=float, default=0.4)
+    p.add_argument("--slice-size", type=int, default=INFERENCE_CONFIG["slice_size"])
+    p.add_argument("--overlap", type=float, default=INFERENCE_CONFIG["overlap"])
+    p.add_argument("--confidence", type=float, default=INFERENCE_CONFIG["confidence"])
+    p.add_argument("--nms-iou", type=float, default=INFERENCE_CONFIG["nms_iou"])
 
-    p.add_argument("--visualize", action="store_true")
+    p.add_argument(
+        "--label-mode",
+        type=str,
+        choices=["en", "binary"],
+        default=INFERENCE_CONFIG["label_mode"],
+    )
+
+    p.add_argument("--visualize", action="store_true", default=INFERENCE_CONFIG["visualize"])
+
+    p.add_argument("--label-map", type=str, default=INFERENCE_CONFIG["label_map"])
 
     return p
-
-
-def load_model(model_path: str, device: str):
-    return AutoDetectionModel.from_pretrained(
-        model_type="ultralytics",
-        model_path=model_path,
-        confidence_threshold=0.4,
-        device=device,
-    )
-
-def run_sahi(model, image_path: str, slice_size: int, overlap: float):
-    return get_sliced_prediction(
-        image=image_path,
-        detection_model=model,
-        slice_height=slice_size,
-        slice_width=slice_size,
-        overlap_height_ratio=overlap,
-        overlap_width_ratio=overlap,
-        postprocess_type="NMM",
-        verbose=False,
-    )
-
-
-def save_txt(pred, image_path: str, out_path: str):
-    img = cv2.imread(image_path)
-    h, w = img.shape[:2]
-
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-
-    with open(out_path, "w") as f:
-        for obj in pred.object_prediction_list:
-
-            class_id = obj.category.id
-
-            x1 = obj.bbox.minx
-            y1 = obj.bbox.miny
-            x2 = obj.bbox.maxx
-            y2 = obj.bbox.maxy
-
-            cx = ((x1 + x2) / 2) / w
-            cy = ((y1 + y2) / 2) / h
-            bw = (x2 - x1) / w
-            bh = (y2 - y1) / h
-
-            f.write(f"{class_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
-
-
-def visualize(image_path: str, pred, out_path: str):
-    img = cv2.imread(image_path)
-
-    for obj in pred.object_prediction_list:
-        x1, y1, x2, y2 = map(int, [
-            obj.bbox.minx,
-            obj.bbox.miny,
-            obj.bbox.maxx,
-            obj.bbox.maxy,
-        ])
-
-        class_id = obj.category.id
-        label = ID_TO_NAME.get(class_id, str(class_id))
-
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        font_scale = min(0.35, max(0.15, (y2 - y1) / 135))
-        (tw, th), _ = cv2.getTextSize( label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1 )
-        cv2.rectangle(img, (x1, max(0, y1 - th - 6)), (x1 + tw, y1), (0, 255, 0), -1, )
-        cv2.putText(
-            img,
-            label,
-            (x1, max(15, y1 - 5)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            (0, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
-
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(out_path, img)
 
 def main():
     args = build_parser().parse_args()
 
-    model = load_model(args.model, DEFAULT_DEVICE)
+    cfg = {
+        "model": args.model,
+        "slice_size": args.slice_size,
+        "overlap": args.overlap,
+        "confidence": args.confidence,
+        "nms_iou": args.nms_iou,
+        "label_map": args.label_map
+    }
 
-    pred = run_sahi(
-        model,
-        args.image,
-        args.slice_size,
-        args.overlap,
-    )
+    result = pipeline(args.image, cfg)
 
-    save_txt(pred, args.image, args.out_txt)
+    write_text(args.out_text, result['extracted_text'])
 
     if args.visualize:
-        visualize(args.image, pred, args.out_img)
+        img = render_from_json(
+            args.image, 
+            result['annotations'],
+            INFERENCE_CONFIG["braille_map"] if args.label_mode=="en" else INFERENCE_CONFIG["binary_map"]
+        )
+        write_image(args.out_img, img)
 
-    print(f"Saved TXT: {args.out_txt}")
-    print(f"Detections: {len(pred.object_prediction_list)}")
+    print(f"Raw detections: {result['raw_detections']}")
+    print(f"Area outliers removed: {result['outliers_removed']}")
+    print(f"NMS duplicates removed: {result['nms_removed']}")
+    print(f"Final detections: {result['raw_detections'] - result['outliers_removed'] - result['nms_removed']}")
 
 
 if __name__ == "__main__":
