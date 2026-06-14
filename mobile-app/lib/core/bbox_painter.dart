@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
-import 'tflite_service.dart';
-import 'sahi_service.dart';
+import '../services/tflite_service.dart';
+import 'line_reconstructor.dart';
+import 'braille_mappings.dart';
 
 class BBoxPainter extends CustomPainter {
-  final List<SlicedDetection> detections;
+  final List<Detection> detections;
+  final List<BrailleLine> lines;
+  final BrailleLanguage language;
   final double imageWidth;
   final double imageHeight;
   final BoxFit fit;
@@ -12,6 +15,8 @@ class BBoxPainter extends CustomPainter {
 
   const BBoxPainter({
     required this.detections,
+    required this.lines,
+    required this.language,
     required this.imageWidth,
     required this.imageHeight,
     this.fit = BoxFit.contain,
@@ -22,25 +27,26 @@ class BBoxPainter extends CustomPainter {
   static final _boxPaint = Paint()
     ..style = PaintingStyle.stroke
     ..strokeWidth = 1.5
-    ..color = Colors.greenAccent;
+    ..color = const Color(0xFF7B9E87);
 
   static final _bgPaint = Paint()
     ..style = PaintingStyle.fill
-    ..color = Colors.green.withAlpha(200);
+    ..color = const Color(0xFF7B9E87);
 
-  static const _textStyle = TextStyle(
-    color: Colors.white,
-    fontSize: 8,
-    fontWeight: FontWeight.bold,
+  static const _labelStyle = TextStyle(
+    color: Color(0xFFFAFAF8),
+    fontSize: 9,
+    fontWeight: FontWeight.w700,
+    height: 1,
   );
 
   @override
   void paint(Canvas canvas, Size size) {
     if (detections.isEmpty) return;
 
-    final bool rotated90or270 = sensorRotation == 90 || sensorRotation == 270;
-    final double canvasW = rotated90or270 ? size.height : size.width;
-    final double canvasH = rotated90or270 ? size.width : size.height;
+    final bool rotated = sensorRotation == 90 || sensorRotation == 270;
+    final double canvasW = rotated ? size.height : size.width;
+    final double canvasH = rotated ? size.width : size.height;
 
     canvas.save();
 
@@ -59,8 +65,7 @@ class BBoxPainter extends CustomPainter {
     final imageAspect = imageWidth / imageHeight;
     final widgetAspect = effectiveSize.width / effectiveSize.height;
 
-    double renderWidth, renderHeight, offsetX, offsetY;
-
+    double renderWidth, renderHeight;
     if (fit == BoxFit.cover) {
       if (imageAspect > widgetAspect) {
         renderHeight = effectiveSize.height;
@@ -79,28 +84,24 @@ class BBoxPainter extends CustomPainter {
       }
     }
 
-    offsetX = (effectiveSize.width - renderWidth) / 2;
-    offsetY = (effectiveSize.height - renderHeight) / 2;
+    final offsetX = (effectiveSize.width - renderWidth) / 2;
+    final offsetY = (effectiveSize.height - renderHeight) / 2;
 
     for (final det in detections) {
-      // bbox coords are absolute pixels — normalise to [0,1] for rendering
-      final x1 = det.bbox.x1 / imageWidth;
-      final y1 = det.bbox.y1 / imageHeight;
-      final x2 = det.bbox.x2 / imageWidth;
-      final y2 = det.bbox.y2 / imageHeight;
-
       final rect = Rect.fromLTRB(
-        offsetX + x1 * renderWidth,
-        offsetY + y1 * renderHeight,
-        offsetX + x2 * renderWidth,
-        offsetY + y2 * renderHeight,
+        offsetX + det.x1 * renderWidth,
+        offsetY + det.y1 * renderHeight,
+        offsetX + det.x2 * renderWidth,
+        offsetY + det.y2 * renderHeight,
       );
 
       canvas.drawRect(rect, _boxPaint);
 
-      final label = TfliteService.classIdToLabel(det.classId);
+      final char = classIdToChar(det.classId, language);
+      if (char.isEmpty || char == '?') continue;
+
       final tp = TextPainter(
-        text: TextSpan(text: label, style: _textStyle),
+        text: TextSpan(text: char, style: _labelStyle),
         textDirection: TextDirection.ltr,
       )..layout();
 
@@ -110,7 +111,11 @@ class BBoxPainter extends CustomPainter {
         tp.width + 6,
         tp.height + 4,
       );
-      canvas.drawRect(labelRect, _bgPaint);
+
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(labelRect, const Radius.circular(3)),
+        _bgPaint,
+      );
       tp.paint(canvas, Offset(rect.left + 3, rect.top - tp.height - 2));
     }
 
@@ -120,6 +125,7 @@ class BBoxPainter extends CustomPainter {
   @override
   bool shouldRepaint(BBoxPainter old) =>
       old.detections != detections ||
+      old.language != language ||
       old.sensorRotation != sensorRotation ||
       old.fit != fit ||
       old.isFrontCamera != isFrontCamera;

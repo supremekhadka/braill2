@@ -23,61 +23,45 @@ enum InferenceBackend { gpu, nnapi, cpu }
 
 class TfliteService {
   static const int inputSize = 640;
-  static const double confidenceThreshold = 0.5;
+  static const double confidenceThreshold = 0.4;
   static const int maxDetections = 300;
 
   Interpreter? _interpreter;
+  IsolateInterpreter? _isolateInterpreter;
   InferenceBackend _activeBackend = InferenceBackend.cpu;
-
   InferenceBackend get activeBackend => _activeBackend;
 
-  static String classIdToLabel(int classId) {
-    final binary = (classId + 1).toRadixString(2).padLeft(6, '0');
-    return binary.split('').reversed.join();
-  }
-
-  // Delegate probe order: GPU -> NNAPI (Android only) -> CPU
-  // Each tier is attempted by actually constructing an Interpreter.
-  // If it throws we fall through to the next tier.
   Future<void> loadModel() async {
     const asset = 'assets/models/best_float32.tflite';
 
-    // Tier 1: GPU delegate (OpenGL ES 3.1+ / Metal on iOS)
     try {
       final opts = InterpreterOptions()..addDelegate(GpuDelegate());
       _interpreter = await Interpreter.fromAsset(asset, options: opts);
       _activeBackend = InferenceBackend.gpu;
-      _log('Delegate: GPU');
-      return;
-    } catch (e) {
-      _log('GPU unavailable: $e');
-    }
+    } catch (_) {}
 
-    // Tier 2: NNAPI - routes to Tensor G1 NPU/DSP on Pixel 6 (Android only)
-    if (Platform.isAndroid) {
+    if (_interpreter == null && Platform.isAndroid) {
       try {
         final opts = InterpreterOptions()..useNnApiForAndroid = true;
         _interpreter = await Interpreter.fromAsset(asset, options: opts);
         _activeBackend = InferenceBackend.nnapi;
-        _log('Delegate: NNAPI');
-        return;
-      } catch (e) {
-        _log('NNAPI unavailable: $e');
-      }
+      } catch (_) {}
     }
 
-    // Tier 3: plain CPU - always works
-    try {
+    if (_interpreter == null) {
       _interpreter = await Interpreter.fromAsset(asset);
       _activeBackend = InferenceBackend.cpu;
-      _log('Delegate: CPU');
-    } catch (e) {
-      _log('CPU load failed: $e');
-      rethrow;
     }
+
+    _isolateInterpreter = await IsolateInterpreter.create(
+      address: _interpreter!.address,
+    );
   }
 
-  void dispose() => _interpreter?.close();
+  void dispose() {
+    _isolateInterpreter?.close();
+    _interpreter?.close();
+  }
 
   Float32List _preprocessImage(img.Image image) {
     final scale = min(inputSize / image.width, inputSize / image.height);
@@ -120,44 +104,33 @@ class TfliteService {
     final detections = <Detection>[];
     for (int i = 0; i < maxDetections; i++) {
       final det = output[i];
-      final confidence = det[4];
-      if (confidence < confidenceThreshold) continue;
-
-      final x1 = ((det[0] - padX) / activeW).clamp(0.0, 1.0);
-      final y1 = ((det[1] - padY) / activeH).clamp(0.0, 1.0);
-      final x2 = ((det[2] - padX) / activeW).clamp(0.0, 1.0);
-      final y2 = ((det[3] - padY) / activeH).clamp(0.0, 1.0);
-
+      if (det[4] < confidenceThreshold) continue;
       detections.add(
         Detection(
-          x1: x1,
-          y1: y1,
-          x2: x2,
-          y2: y2,
-          confidence: confidence,
+          x1: ((det[0] - padX) / activeW).clamp(0.0, 1.0),
+          y1: ((det[1] - padY) / activeH).clamp(0.0, 1.0),
+          x2: ((det[2] - padX) / activeW).clamp(0.0, 1.0),
+          y2: ((det[3] - padY) / activeH).clamp(0.0, 1.0),
+          confidence: det[4],
           classId: det[5].round(),
         ),
       );
     }
-
     detections.sort((a, b) => b.confidence.compareTo(a.confidence));
     return detections;
   }
 
   Future<List<Detection>> runInference(img.Image image) async {
-    if (_interpreter == null) throw StateError('Model not loaded');
-
+    if (_isolateInterpreter == null) throw StateError('Model not loaded');
     final input = _preprocessImage(image);
     final outputBuffer = List.generate(
       1,
       (_) => List.generate(maxDetections, (_) => List.filled(6, 0.0)),
     );
-
-    _interpreter!.run(
+    await _isolateInterpreter!.run(
       input.reshape([1, inputSize, inputSize, 3]),
       outputBuffer,
     );
-
     return _parseOutput(outputBuffer[0], image.width, image.height);
   }
 
@@ -171,6 +144,4 @@ class TfliteService {
     final bytes = await file.readAsBytes();
     return runInferenceFromEncodedBytes(bytes);
   }
-
-  void _log(String msg) => print('[TfliteService] $msg');
 }
