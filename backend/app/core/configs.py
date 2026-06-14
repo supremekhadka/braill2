@@ -1,7 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class InferenceConfig:
-    ALLOWED_LANGS = {"en", "np"}
+    ALLOWED_LANGS = {"en", "ne"}
 
     NEPALI_LABEL_MAP = "configs/nepali_braille.yaml"
 
