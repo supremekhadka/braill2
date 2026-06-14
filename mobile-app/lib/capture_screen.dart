@@ -1,8 +1,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:cunning_document_scanner/cunning_document_scanner.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'package:image/image.dart' as img;
 import 'tflite_service.dart';
+import 'sahi_service.dart';
 import 'bbox_painter.dart';
 
 class CaptureScreen extends StatefulWidget {
@@ -14,11 +17,12 @@ class CaptureScreen extends StatefulWidget {
 
 class _CaptureScreenState extends State<CaptureScreen> {
   final TfliteService _tfliteService = TfliteService();
+  late final SahiService _sahiService;
   final ImagePicker _picker = ImagePicker();
 
-  File? _imageFile;
+  File? _scannedFile;
   img.Image? _decodedImage;
-  List<Detection> _detections = [];
+  List<SlicedDetection> _detections = [];
   bool _isLoading = false;
   bool _modelLoaded = false;
   String? _errorMessage;
@@ -26,6 +30,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
   @override
   void initState() {
     super.initState();
+    _sahiService = SahiService(
+      tfliteService: _tfliteService,
+      config: const SahiConfig(
+        sliceHeight: 640,
+        sliceWidth: 640,
+        overlapHeightRatio: 0.2,
+        overlapWidthRatio: 0.2,
+        fullImageInference: false,
+        postprocessType: PostprocessType.nmm,
+      ),
+    );
     _loadModel();
   }
 
@@ -44,43 +59,146 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
   }
 
-  Future<void> _pickImage(ImageSource source) async {
+  Future<void> _scanWithCamera() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _detections = [];
+      _scannedFile = null;
+    });
+
     try {
-      final picked = await _picker.pickImage(source: source, imageQuality: 100);
-      if (picked == null) return;
+      final paths = await CunningDocumentScanner.getPictures(
+        noOfPages: 1,
+        isGalleryImportAllowed: false,
+        iosScannerOptions: IosScannerOptions(
+          imageFormat: IosImageFormat.jpg,
+          jpgCompressionQuality: 0.9,
+        ),
+      );
 
-      setState(() {
-        _isLoading = true;
-        _detections = [];
-        _errorMessage = null;
-      });
-
-      final file = File(picked.path);
-      final bytes = await file.readAsBytes();
-      final decoded = img.decodeImage(bytes);
-
-      if (decoded == null) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Could not decode image';
-        });
+      if (paths == null || paths.isEmpty) {
+        setState(() => _isLoading = false);
         return;
       }
 
-      final detections = await _tfliteService.runInference(decoded);
-
-      setState(() {
-        _imageFile = file;
-        _decodedImage = decoded;
-        _detections = detections;
-        _isLoading = false;
-      });
+      await _processScannedFile(paths.first);
     } catch (e) {
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Error: $e';
+        _errorMessage = 'Scan failed: $e';
       });
     }
+  }
+
+  Future<void> _scanFromGallery() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _detections = [];
+      _scannedFile = null;
+    });
+
+    try {
+      if (Platform.isAndroid) {
+        final paths = await CunningDocumentScanner.getPictures(
+          noOfPages: 1,
+          isGalleryImportAllowed: true,
+          iosScannerOptions: IosScannerOptions(
+            imageFormat: IosImageFormat.jpg,
+            jpgCompressionQuality: 0.9,
+          ),
+        );
+
+        if (paths == null || paths.isEmpty) {
+          setState(() => _isLoading = false);
+          return;
+        }
+
+        await _processScannedFile(paths.first);
+      } else {
+        final picked = await _picker.pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 100,
+        );
+
+        if (picked == null) {
+          setState(() => _isLoading = false);
+          return;
+        }
+
+        final cropped = await ImageCropper().cropImage(
+          sourcePath: picked.path,
+          uiSettings: [
+            AndroidUiSettings(
+              toolbarTitle: 'Adjust Document',
+              toolbarColor: Colors.black,
+              toolbarWidgetColor: Colors.greenAccent,
+              activeControlsWidgetColor: Colors.greenAccent,
+              backgroundColor: Colors.black,
+              cropFrameColor: Colors.greenAccent,
+              cropGridColor: Colors.greenAccent.withOpacity(0.3),
+              initAspectRatio: CropAspectRatioPreset.original,
+              lockAspectRatio: false,
+              showCropGrid: true,
+            ),
+            IOSUiSettings(
+              title: 'Adjust Document',
+              doneButtonTitle: 'Confirm',
+              cancelButtonTitle: 'Cancel',
+              showCancelConfirmationDialog: false,
+              resetAspectRatioEnabled: true,
+              aspectRatioLockEnabled: false,
+            ),
+          ],
+        );
+
+        if (cropped == null) {
+          setState(() => _isLoading = false);
+          return;
+        }
+
+        await _processScannedFile(cropped.path);
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Gallery error: $e';
+      });
+    }
+  }
+
+  Future<void> _processScannedFile(String path) async {
+    final file = File(path);
+    final bytes = await file.readAsBytes();
+    final decoded = img.decodeImage(bytes);
+
+    if (decoded == null) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Could not decode image';
+      });
+      return;
+    }
+
+    final oriented = img.bakeOrientation(decoded);
+    final detections = await _sahiService.runSlicedInference(oriented);
+
+    setState(() {
+      _scannedFile = file;
+      _decodedImage = oriented;
+      _detections = detections;
+      _isLoading = false;
+    });
+  }
+
+  void _reset() {
+    setState(() {
+      _scannedFile = null;
+      _decodedImage = null;
+      _detections = [];
+      _errorMessage = null;
+    });
   }
 
   @override
@@ -105,24 +223,26 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 ),
               ),
             ),
+          if (_scannedFile != null)
+            IconButton(
+              icon: const Icon(Icons.refresh, color: Colors.white54),
+              tooltip: 'Rescan',
+              onPressed: _reset,
+            ),
         ],
       ),
       body: Column(
         children: [
-          // Image + bbox overlay
           Expanded(child: _buildImageArea()),
-
-          // Error message
           if (_errorMessage != null)
             Padding(
-              padding: const EdgeInsets.all(8.0),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Text(
                 _errorMessage!,
                 style: const TextStyle(color: Colors.redAccent),
+                textAlign: TextAlign.center,
               ),
             ),
-
-          // Bottom buttons
           _buildBottomBar(),
         ],
       ),
@@ -138,7 +258,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
             CircularProgressIndicator(color: Colors.greenAccent),
             SizedBox(height: 16),
             Text(
-              'Running inference...',
+              'Processing...',
               style: TextStyle(color: Colors.white54),
             ),
           ],
@@ -146,20 +266,21 @@ class _CaptureScreenState extends State<CaptureScreen> {
       );
     }
 
-    if (_imageFile == null) {
-      return Center(
+    if (_scannedFile == null) {
+      return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.image_outlined, color: Colors.white24, size: 80),
-            const SizedBox(height: 16),
-            const Text(
-              'No image selected',
+            Icon(Icons.document_scanner_outlined,
+                color: Colors.white24, size: 80),
+            SizedBox(height: 16),
+            Text(
+              'No document scanned',
               style: TextStyle(color: Colors.white38, fontSize: 16),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Use the buttons below to capture or upload',
+            SizedBox(height: 8),
+            Text(
+              'Use the buttons below to scan or upload',
               style: TextStyle(color: Colors.white24, fontSize: 13),
             ),
           ],
@@ -167,16 +288,16 @@ class _CaptureScreenState extends State<CaptureScreen> {
       );
     }
 
-    // Show image with bounding boxes overlaid
     return LayoutBuilder(
       builder: (context, constraints) {
         return Stack(
           children: [
-            // Image fills the area
             Positioned.fill(
-              child: Image.file(_imageFile!, fit: BoxFit.contain),
+              child: Image.memory(
+                img.encodeJpg(_decodedImage!),
+                fit: BoxFit.contain,
+              ),
             ),
-            // BBox overlay
             if (_detections.isNotEmpty)
               Positioned.fill(
                 child: CustomPaint(
@@ -195,32 +316,28 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Widget _buildBottomBar() {
+    final ready = _modelLoaded && !_isLoading;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       color: Colors.black,
       child: Row(
         children: [
-          // Gallery button
           Expanded(
             child: _ActionButton(
               icon: Icons.photo_library_rounded,
               label: 'Gallery',
               color: Colors.blueAccent,
-              onTap: _modelLoaded && !_isLoading
-                  ? () => _pickImage(ImageSource.gallery)
-                  : null,
+              onTap: ready ? _scanFromGallery : null,
             ),
           ),
           const SizedBox(width: 12),
-          // Camera button
           Expanded(
             child: _ActionButton(
-              icon: Icons.camera_alt_rounded,
-              label: 'Camera',
+              icon: Icons.document_scanner_rounded,
+              label: 'Scan',
               color: Colors.greenAccent,
-              onTap: _modelLoaded && !_isLoading
-                  ? () => _pickImage(ImageSource.camera)
-                  : null,
+              onTap: ready ? _scanWithCamera : null,
             ),
           ),
         ],

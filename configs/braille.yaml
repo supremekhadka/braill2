@@ -1,0 +1,46 @@
+# Braille character mapping: 0-indexed class ID -> character or indicator
+# Derived from standard Grade 1 Braille dot encodings.
+# Keys align with the 0-indexed class IDs in characters.yaml.
+
+# Letters
+0:  "a"   # dots 1        | 100000
+2:  "b"   # dots 1,2      | 110000
+8:  "c"   # dots 1,4      | 100100
+24: "d"   # dots 1,4,5    | 100110
+16: "e"   # dots 1,5      | 100010
+10: "f"   # dots 1,2,4    | 110100
+26: "g"   # dots 1,2,4,5  | 110110
+18: "h"   # dots 1,2,5    | 110010
+9:  "i"   # dots 2,4      | 010100
+25: "j"   # dots 2,4,5    | 010110
+4:  "k"   # dots 1,3      | 101000
+6:  "l"   # dots 1,2,3    | 111000
+12: "m"   # dots 1,3,4    | 101100
+28: "n"   # dots 1,3,4,5  | 101110
+20: "o"   # dots 1,3,5    | 101010
+14: "p"   # dots 1,2,3,4  | 111100
+30: "q"   # dots 1,2,3,4,5| 111110
+22: "r"   # dots 1,2,3,5  | 111010
+13: "s"   # dots 2,3,4    | 011100
+29: "t"   # dots 2,3,4,5  | 011110
+36: "u"   # dots 1,3,6    | 101001
+38: "v"   # dots 1,2,3,6  | 111001
+57: "w"   # dots 2,4,5,6  | 010111
+44: "x"   # dots 1,3,4,6  | 101101
+60: "y"   # dots 1,3,4,5,6| 101111
+52: "z"   # dots 1,3,5,6  | 101011
+
+# Punctuation
+1:  ","   # dot 2         | 010000
+5:  ";"   # dots 2,3      | 011000
+17: ":"   # dots 2,5      | 010010
+49: "."   # dots 2,5,6    | 010011
+21: "!"   # dots 2,3,5    | 011010
+3:  "'"   # dot 3         | 001000
+35: "-"   # dots 3,6      | 001001
+53: "("   # dots 2,3,5,6  | 011011
+37: "?"   # dots 2,3,6    | 011001
+
+# Indicators
+59: "[NUMBER]"  # dots 3,4,5,6 | 001111
+31: "[CAPS]"    # dot 6        | 000001

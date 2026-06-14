@@ -2,3 +2,8 @@ data
 runs
 weights
 __pycache__/
+venv
+*.pt
+experiments
+.env
+storage/

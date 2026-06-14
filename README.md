@@ -2,54 +2,49 @@
 
 A Braille Detection and Translation System based on Object Detection.
 
-### Environment Setup
+## Environment Setup
 
-#### Create Environment
-
-We use python version 3.12.
+### Create Environment
 
 Conda:
 
-```
+```bash
 conda create -n braill2 python=3.12
 ```
-
-or,
 
 Venv:
 
 ```
-python -3.12 -m venv venv
+python -m venv venv
 ```
 
-#### Activate Environment
+### Activate Environment
 
-If using Conda:
+Conda:
 
 ```
 conda activate braill2
 ```
 
-or,
+Venv:
 
-If using Venv:
-
-On Windows:
+Windows:
 
 ```
-venv/Source/activate
+venv/Scripts/activate
 ```
 
-On MacOS / Linux:
+MacOS / Linux:
 
 ```
 source venv/bin/activate
 ```
 
-#### Install Requirements
+### Install Requirements
 
 ```
-pip install requirements.txt
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
 ```
 
 ### Raw Dataset
@@ -63,27 +58,19 @@ pip install requirements.txt
 In the root directory, run the build command as a module:
 
 ```
-python -m src.data_builder.main
+python -m vision.data_builder.main --num-synthetic 400
 ```
 
 ### Train Model
 
-To train on cells:
-
 ```
-python train.py --target cells --model yolo26n.pt --epochs 100 --batch 8 --imgsz 640 --device 0
+python -m vision.training.train
 ```
 
-To train on characters:
+### Predict
 
 ```
-python train.py --target characters --model yolo26n.pt --epochs 100 --batch 8 --imgsz 640 --device 0
-```
-
-To fine-tune model trained on cells with the characters dataset:
-
-```
-python train.py --target characters --model runs/cells_run/weights/best.pt --epochs 100 --batch 8 --imgsz 640 --device 0
+python -m vision.inference.predict --image /path/to/image --visualize
 ```
 
 ## Citations
