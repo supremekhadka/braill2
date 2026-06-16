@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import '../services/tflite_service.dart';
 
 class BrailleCell {
@@ -25,72 +27,61 @@ class BrailleLine {
 }
 
 class LineReconstructor {
-  static const double toleranceFactor = 0.6;
-  static const double wordGapMultiplier = 0.9;
+  static const double _tolFactor = 0.5;
+  static const double _wordFactor = 1.5;
 
   static List<BrailleLine> reconstruct(List<Detection> detections) {
     if (detections.isEmpty) return const [];
 
-    final cells = _iqrFilter(detections.map(_toCell).toList());
-    if (cells.isEmpty) return const [];
+    final cells = detections.map(_toCell).toList();
 
-    final medianH = _median(cells.map((c) => c.height).toList());
-    final medianW = _median(cells.map((c) => c.width).toList());
-    final tol = medianH * toleranceFactor;
+    final filtered = _filterOutliers(cells);
+    if (filtered.isEmpty) return const [];
 
-    cells.sort((a, b) => a.cy.compareTo(b.cy));
-    final lineGroups = <_LineAccumulator>[];
+    final medianH = _median(filtered.map((c) => c.height).toList());
+    final medianW = _median(filtered.map((c) => c.width).toList());
+    final tol = medianH * _tolFactor;
 
-    for (final cell in cells) {
-      _LineAccumulator? bestLine;
-      double bestDist = double.infinity;
-      for (final line in lineGroups) {
-        final dist = (cell.cy - line.predictY(cell.cx)).abs();
-        if (dist < tol && dist < bestDist) {
-          bestDist = dist;
-          bestLine = line;
-        }
+    filtered.sort((a, b) => a.cy.compareTo(b.cy));
+
+    final bands = <({double cy, List<BrailleCell> cells})>[];
+    for (final cell in filtered) {
+      final match = bands
+          .cast<({double cy, List<BrailleCell> cells})?>()
+          .firstWhere((b) => (cell.cy - b!.cy).abs() < tol, orElse: () => null);
+      if (match != null) {
+        match.cells.add(cell);
+        final band = bands.firstWhere((b) => b.cells == match.cells);
+        final idx = bands.indexOf(band);
+        final newCy =
+            band.cells.map((c) => c.cy).reduce((a, b) => a + b) /
+            band.cells.length;
+        bands[idx] = (cy: newCy, cells: band.cells);
+      } else {
+        bands.add((cy: cell.cy, cells: [cell]));
       }
-      (bestLine ?? (lineGroups..add(_LineAccumulator())).last).add(cell);
     }
 
-    lineGroups.sort((a, b) => a.meanY.compareTo(b.meanY));
-    return lineGroups.map((acc) {
-      final sorted = acc.cells..sort((a, b) => a.cx.compareTo(b.cx));
-      return BrailleLine(_segmentWords(sorted, medianW));
+    bands.sort((a, b) => a.cy.compareTo(b.cy));
+
+    return bands.map((band) {
+      band.cells.sort((a, b) => a.cx.compareTo(b.cx));
+      return BrailleLine(_segmentWords(band.cells, medianW));
     }).toList();
   }
 
-  static List<BrailleCell> _iqrFilter(List<BrailleCell> cells) {
+  static List<BrailleCell> _filterOutliers(List<BrailleCell> cells) {
     if (cells.length < 4) return cells;
-    final widths = cells.map((c) => c.width).toList()..sort();
-    final heights = cells.map((c) => c.height).toList()..sort();
-    final (wLo, wHi) = _iqrBounds(widths);
-    final (hLo, hHi) = _iqrBounds(heights);
-    return cells
-        .where(
-          (c) =>
-              c.width >= wLo &&
-              c.width <= wHi &&
-              c.height >= hLo &&
-              c.height <= hHi,
-        )
-        .toList();
-  }
-
-  static (double, double) _iqrBounds(List<double> sorted) {
-    final q1 = _percentile(sorted, 0.25);
-    final q3 = _percentile(sorted, 0.75);
+    final areas = (cells.map((c) => c.width * c.height).toList())..sort();
+    final q1 = _percentile(areas, 0.25);
+    final q3 = _percentile(areas, 0.75);
     final iqr = q3 - q1;
-    return (q1 - 1.5 * iqr, q3 + 1.5 * iqr);
-  }
-
-  static double _percentile(List<double> sorted, double p) {
-    final pos = p * (sorted.length - 1);
-    final lo = pos.floor();
-    final hi = pos.ceil();
-    if (lo == hi) return sorted[lo];
-    return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+    final lo = q1 - 1.5 * iqr;
+    final hi = q3 + 1.5 * iqr;
+    return cells.where((c) {
+      final a = c.width * c.height;
+      return a >= lo && a <= hi;
+    }).toList();
   }
 
   static List<BrailleWord> _segmentWords(
@@ -98,13 +89,15 @@ class LineReconstructor {
     double medianW,
   ) {
     if (cells.isEmpty) return const [];
-    final threshold = medianW * wordGapMultiplier;
+    final threshold = medianW * _wordFactor;
     final words = <BrailleWord>[];
     var current = <BrailleCell>[cells.first];
     for (int i = 1; i < cells.length; i++) {
       final gap =
-          (cells[i].cx - cells[i].width / 2) -
-          (cells[i - 1].cx + cells[i - 1].width / 2);
+          cells[i].cx -
+          cells[i - 1].cx -
+          cells[i - 1].width / 2 -
+          cells[i].width / 2;
       if (gap > threshold) {
         words.add(BrailleWord(List.unmodifiable(current)));
         current = [];
@@ -129,29 +122,11 @@ class LineReconstructor {
     final m = s.length ~/ 2;
     return s.length.isOdd ? s[m] : (s[m - 1] + s[m]) / 2;
   }
-}
 
-class _LineAccumulator {
-  final List<BrailleCell> cells = [];
-  double _n = 0, _sumX = 0, _sumY = 0, _sumXY = 0, _sumX2 = 0;
-
-  double get meanY => _n > 0 ? _sumY / _n : 0;
-
-  double predictY(double x) {
-    if (_n < 2) return meanY;
-    final denom = _n * _sumX2 - _sumX * _sumX;
-    if (denom.abs() < 1e-12) return meanY;
-    final slope = (_n * _sumXY - _sumX * _sumY) / denom;
-    final intercept = (_sumY - slope * _sumX) / _n;
-    return slope * x + intercept;
-  }
-
-  void add(BrailleCell cell) {
-    cells.add(cell);
-    _n++;
-    _sumX += cell.cx;
-    _sumY += cell.cy;
-    _sumXY += cell.cx * cell.cy;
-    _sumX2 += cell.cx * cell.cx;
+  static double _percentile(List<double> sorted, double p) {
+    final pos = p * (sorted.length - 1);
+    final lo = pos.floor(), hi = pos.ceil();
+    if (lo == hi) return sorted[lo];
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
   }
 }

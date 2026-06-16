@@ -112,9 +112,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
     setState(() => _step = _Step.reconstructing);
     final lines = LineReconstructor.reconstruct(detections);
 
-    // Save to history (offline mode only)
+    // Save to history (offline mode only) — always store English for history
     if (widget.mode == InferenceMode.offline) {
-      final text = _buildQuickText(lines);
+      final text = buildTextFromLines(lines, BrailleLanguage.english);
       await _history.save(
         HistoryEntry(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -131,8 +131,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       _isLoading = false;
       _step = _Step.idle;
     });
-    if (!mounted) return;
 
+    if (!mounted) return;
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -144,21 +144,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
         ),
       ),
     );
-  }
-
-  String _buildQuickText(List<BrailleLine> lines) {
-    final buf = StringBuffer();
-    for (int li = 0; li < lines.length; li++) {
-      for (int wi = 0; wi < lines[li].words.length; wi++) {
-        if (wi > 0) buf.write(' ');
-        for (final cell in lines[li].words[wi].cells) {
-          final ch = classIdToChar(cell.detection.classId, _language);
-          if (ch != '' && ch != '?') buf.write(ch);
-        }
-      }
-      if (li < lines.length - 1) buf.write('\n');
-    }
-    return buf.toString();
   }
 
   @override
@@ -344,6 +329,7 @@ class _LoadingModelBanner extends StatelessWidget {
 class _LanguagePicker extends StatelessWidget {
   final BrailleLanguage value;
   final ValueChanged<BrailleLanguage> onChanged;
+
   const _LanguagePicker({required this.value, required this.onChanged});
 
   @override

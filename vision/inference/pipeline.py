@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from .processing.sahi import load_model, run_sliced_inference
+from .processing.sahi_inference import load_model, run_sliced_inference
 from .conversion.annotation_writer import to_detections_json
 from .utils.file_utils import load_label_map
 from .conversion.text_construction import convert_detections_to_text

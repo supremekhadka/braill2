@@ -1,13 +1,39 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'screens/home_screen.dart';
+import 'services/settings_service.dart';
+import 'services/api_client.dart';
+import 'services/auth_service.dart';
 
-void main() {
-  runApp(const BraillApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // ── Bootstrap services ──────────────────────────────────────────────────
+  final settingsService = SettingsService();
+  await settingsService.init(); // loads persisted base URL
+
+  final apiClient = ApiClient(settingsService);
+  final authService = AuthService(apiClient);
+  await authService.init(); // loads + validates stored JWT
+
+  runApp(BraillApp(
+    settingsService: settingsService,
+    apiClient: apiClient,
+    authService: authService,
+  ));
 }
 
 class BraillApp extends StatelessWidget {
-  const BraillApp({super.key});
+  final SettingsService settingsService;
+  final ApiClient apiClient;
+  final AuthService authService;
+
+  const BraillApp({
+    super.key,
+    required this.settingsService,
+    required this.apiClient,
+    required this.authService,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -17,7 +43,11 @@ class BraillApp extends StatelessWidget {
       themeMode: ThemeMode.system,
       theme: _buildTheme(Brightness.light),
       darkTheme: _buildTheme(Brightness.dark),
-      home: const HomeScreen(),
+      home: HomeScreen(
+        authService: authService,
+        apiClient: apiClient,
+        settingsService: settingsService,
+      ),
     );
   }
 
@@ -105,13 +135,11 @@ class BraillApp extends StatelessWidget {
       colorScheme: colorScheme,
       textTheme: textTheme,
       useMaterial3: true,
-      scaffoldBackgroundColor: isLight
-          ? const Color(0xFFFAFAF8)
-          : const Color(0xFF17140F),
+      scaffoldBackgroundColor:
+          isLight ? const Color(0xFFFAFAF8) : const Color(0xFF17140F),
       appBarTheme: AppBarTheme(
-        backgroundColor: isLight
-            ? const Color(0xFFFAFAF8)
-            : const Color(0xFF17140F),
+        backgroundColor:
+            isLight ? const Color(0xFFFAFAF8) : const Color(0xFF17140F),
         foregroundColor: colorScheme.onSurface,
         elevation: 0,
         scrolledUnderElevation: 0,
@@ -126,10 +154,7 @@ class BraillApp extends StatelessWidget {
         indicatorColor: colorScheme.primary,
         labelColor: colorScheme.primary,
         unselectedLabelColor: colorScheme.onSurface.withOpacity(0.4),
-        labelStyle: GoogleFonts.inter(
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-        ),
+        labelStyle: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
         unselectedLabelStyle: GoogleFonts.inter(fontSize: 14),
         dividerColor: colorScheme.outline,
       ),
@@ -142,7 +167,8 @@ class BraillApp extends StatelessWidget {
         backgroundColor: colorScheme.onSurface,
         contentTextStyle: GoogleFonts.inter(color: colorScheme.surface),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }

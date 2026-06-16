@@ -1,24 +1,17 @@
-String classIdToBrailleChar(int id) => String.fromCharCode(0x2800 + id + 1);
-
 enum BrailleLanguage {
-  english('English', 'EN'),
-  spanish('Español', 'ES'),
-  french('Français', 'FR'),
-  nepali('नेपाली', 'NE'),
-  arabic('العربية', 'AR'),
-  russian('Русский', 'RU');
+  english,
+  unicode;
 
-  const BrailleLanguage(this.label, this.code);
-  final String label;
-  final String code;
-  bool get isEnabled => this == BrailleLanguage.english;
+  String get label => switch (this) {
+    BrailleLanguage.english => 'English',
+    BrailleLanguage.unicode => 'Unicode',
+  };
+
+  bool get isEnabled => true;
 }
 
-const String _cap = '';
-const String _num = '';
-const String _skip = '?';
-
-const Map<int, String> _english = {
+const Map<int, String> _englishMap = {
+  // Letters
   0: 'a',
   2: 'b',
   8: 'c',
@@ -45,310 +38,111 @@ const Map<int, String> _english = {
   44: 'x',
   60: 'y',
   52: 'z',
+  // Punctuation
   1: ',',
   5: ';',
   17: ':',
   49: '.',
   21: '!',
-  37: '"',
-  51: '"',
-  53: '(',
-  3: '\'',
+  3: "'",
   35: '-',
-  59: '?',
-  31: _num,
+  53: '(',
+  33: '?',
+  // Indicators (sentinel values — consumed by the text-builder, not emitted)
+  59: '[NUMBER]',
+  31: '[CAPS]',
 };
 
-// incorrect mappings below here
-const Map<int, String> _spanish = {
-  0: 'a',
-  1: 'b',
-  2: 'c',
-  3: 'd',
-  4: 'e',
-  5: 'f',
-  6: 'g',
-  7: 'h',
-  8: 'i',
-  9: 'j',
-  10: 'k',
-  11: 'l',
-  12: 'm',
-  13: 'n',
-  14: 'o',
-  15: 'p',
-  16: 'q',
-  17: 'r',
-  18: 's',
-  19: 't',
-  20: 'u',
-  21: 'v',
-  22: 'x',
-  23: 'y',
-  24: 'z',
-  25: 'á',
-  26: 'é',
-  27: 'ó',
-  30: 'w',
-  31: ',',
-  32: ';',
-  33: ':',
-  34: '!',
-  35: '(',
-  36: '"',
-  37: '?',
-  39: ')',
-  41: _num,
-  42: '.',
-  43: '\'',
-  44: '-',
-  45: _cap,
-  46: '/',
-  49: 'í',
-  50: 'ú',
-  51: 'ü',
-  52: 'ñ',
-};
-
-const Map<int, String> _french = {
-  0: 'a',
-  1: 'b',
-  2: 'c',
-  3: 'd',
-  4: 'e',
-  5: 'f',
-  6: 'g',
-  7: 'h',
-  8: 'i',
-  9: 'j',
-  10: 'k',
-  11: 'l',
-  12: 'm',
-  13: 'n',
-  14: 'o',
-  15: 'p',
-  16: 'q',
-  17: 'r',
-  18: 's',
-  19: 't',
-  20: 'u',
-  21: 'v',
-  22: 'x',
-  23: 'y',
-  24: 'z',
-  25: 'et',
-  26: 'pour',
-  27: 'de',
-  28: 'le',
-  29: 'en',
-  30: 'w',
-  31: ',',
-  32: ';',
-  33: ':',
-  34: '!',
-  35: '(',
-  36: '"',
-  37: '?',
-  38: '»',
-  39: ')',
-  41: _num,
-  42: '.',
-  43: '\'',
-  44: '-',
-  45: _cap,
-  46: '/',
-  49: 'à',
-  50: 'â',
-  51: 'è',
-  52: 'é',
-  53: 'ê',
-  57: 'î',
-  58: 'ô',
-  59: 'û',
-  60: 'ù',
-  61: 'ç',
-};
-
-const Map<int, String> _nepali = {
-  0: 'अ',
-  1: 'आ',
-  2: 'इ',
-  3: 'ई',
-  4: 'उ',
-  5: 'ऊ',
-  6: 'ए',
-  7: 'ऐ',
-  8: 'ओ',
-  9: 'औ',
-  10: 'क',
-  11: 'ख',
-  12: 'ग',
-  13: 'घ',
-  14: 'ङ',
-  15: 'च',
-  16: 'छ',
-  17: 'ज',
-  18: 'झ',
-  19: 'ञ',
-  20: 'ट',
-  21: 'ठ',
-  22: 'ड',
-  23: 'ढ',
-  24: 'ण',
-  25: 'त',
-  26: 'थ',
-  27: 'द',
-  28: 'ध',
-  29: 'न',
-  30: 'प',
-  31: 'फ',
-  32: 'ब',
-  33: 'भ',
-  34: 'म',
-  35: 'य',
-  36: 'र',
-  37: 'ल',
-  38: 'व',
-  39: 'श',
-  40: 'ष',
-  41: 'स',
-  42: 'ह',
-  43: 'क्ष',
-  44: 'त्र',
-  45: '१',
-  46: '२',
-  47: '३',
-  48: '४',
-  49: '५',
-  50: '६',
-  51: '७',
-  52: '८',
-  53: '९',
-  54: '०',
-  55: ',',
-  56: '।',
-  57: '-',
-  58: _num,
-  59: _cap,
-};
-
-const Map<int, String> _arabic = {
-  0: 'ا',
-  1: 'ب',
-  2: 'ت',
-  3: 'ث',
-  4: 'ج',
-  5: 'ح',
-  6: 'خ',
-  7: 'د',
-  8: 'ذ',
-  9: 'ر',
-  10: 'ز',
-  11: 'س',
-  12: 'ش',
-  13: 'ص',
-  14: 'ض',
-  15: 'ط',
-  16: 'ظ',
-  17: 'ع',
-  18: 'غ',
-  19: 'ف',
-  20: 'ق',
-  21: 'ك',
-  22: 'ل',
-  23: 'م',
-  24: 'ن',
-  25: 'ه',
-  26: 'و',
-  27: 'ي',
-  30: 'ة',
-  31: ',',
-  32: ';',
-  33: ':',
-  34: '!',
-  35: '(',
-  36: '«',
-  37: '؟',
-  38: '»',
-  39: ')',
-  41: _num,
-  42: '.',
-  43: '\'',
-  44: '-',
-  45: _cap,
-  46: '/',
-  47: 'أ',
-  48: 'إ',
-  49: 'آ',
-  50: 'ئ',
-  51: 'ء',
-  52: 'ؤ',
-  53: 'لا',
-  54: 'لأ',
-  55: 'لإ',
-  56: 'لآ',
-};
-
-const Map<int, String> _russian = {
-  0: 'а',
-  1: 'б',
-  2: 'в',
-  3: 'г',
-  4: 'д',
-  5: 'е',
-  6: 'ж',
-  7: 'з',
-  8: 'и',
-  9: 'й',
-  10: 'к',
-  11: 'л',
-  12: 'м',
-  13: 'н',
-  14: 'о',
-  15: 'п',
-  16: 'р',
-  17: 'с',
-  18: 'т',
-  19: 'у',
-  20: 'ф',
-  21: 'х',
-  22: 'ц',
-  23: 'ч',
-  24: 'ш',
-  25: 'щ',
-  26: 'ъ',
-  27: 'ы',
-  30: 'ь',
-  31: ',',
-  32: ';',
-  33: ':',
-  34: '!',
-  35: '(',
-  36: '"',
-  37: '?',
-  38: '"',
-  39: ')',
-  41: _num,
-  42: '.',
-  43: '\'',
-  44: '-',
-  45: _cap,
-  46: '/',
-  47: 'э',
-  48: 'ю',
-  49: 'я',
-  50: 'ё',
-};
+String _idToUnicode(int id) {
+  if (id < 0 || id > 62) return '';
+  return String.fromCharCode(0x2801 + id);
+}
 
 String classIdToChar(int classId, BrailleLanguage language) {
-  if (classId < 0 || classId >= 63) return '?';
-  final map = switch (language) {
-    BrailleLanguage.english => _english,
-    BrailleLanguage.spanish => _spanish,
-    BrailleLanguage.french => _french,
-    BrailleLanguage.nepali => _nepali,
-    BrailleLanguage.arabic => _arabic,
-    BrailleLanguage.russian => _russian,
-  };
-  return map[classId] ?? _skip;
+  switch (language) {
+    case BrailleLanguage.english:
+      return _englishMap[classId] ?? '';
+    case BrailleLanguage.unicode:
+      return _idToUnicode(classId);
+  }
+}
+
+const String kIndicatorCaps = '[CAPS]';
+const String kIndicatorNumber = '[NUMBER]';
+
+const Map<String, String> kBrailleLetterToDigit = {
+  'a': '1',
+  'b': '2',
+  'c': '3',
+  'd': '4',
+  'e': '5',
+  'f': '6',
+  'g': '7',
+  'h': '8',
+  'i': '9',
+  'j': '0',
+};
+
+String buildTextFromLines(List<dynamic> lines, BrailleLanguage language) {
+  final buf = StringBuffer();
+
+  for (int li = 0; li < lines.length; li++) {
+    final line = lines[li];
+
+    for (int wi = 0; wi < (line.words as List).length; wi++) {
+      if (wi > 0) buf.write(' ');
+
+      bool capitalNext = false;
+      bool capsLock = false;
+      bool numberMode = false;
+
+      final cells = line.words[wi].cells as List;
+      for (int ci = 0; ci < cells.length; ci++) {
+        final id = cells[ci].detection.classId as int;
+        final raw = classIdToChar(id, language);
+
+        if (raw == kIndicatorCaps) {
+          if (capitalNext) {
+            capsLock = true;
+            capitalNext = false;
+          } else {
+            capitalNext = true;
+          }
+          continue;
+        }
+
+        if (raw == kIndicatorNumber) {
+          numberMode = true;
+          capitalNext = false;
+          continue;
+        }
+        if (raw.isEmpty) continue;
+
+        String ch = raw;
+        if (numberMode && language == BrailleLanguage.english) {
+          final digit = kBrailleLetterToDigit[ch];
+          if (digit != null) {
+            ch = digit;
+          } else {
+            numberMode = false;
+          }
+        }
+
+        if (language == BrailleLanguage.english) {
+          if (capsLock) {
+            ch = ch.toUpperCase();
+          } else if (capitalNext) {
+            ch = ch.toUpperCase();
+            capitalNext = false;
+          }
+        }
+
+        buf.write(ch);
+      }
+    }
+
+    if (li < lines.length - 1) buf.write('\n');
+  }
+
+  return buf.toString();
 }

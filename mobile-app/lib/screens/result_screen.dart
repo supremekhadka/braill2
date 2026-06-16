@@ -35,6 +35,7 @@ class _ResultScreenState extends State<ResultScreen>
     with SingleTickerProviderStateMixin {
   late BrailleLanguage _language;
   late TabController _tabs;
+  bool _showBBoxes = true;
   final GlobalKey _imageRepaintKey = GlobalKey();
   double? _imgW, _imgH;
 
@@ -52,67 +53,21 @@ class _ResultScreenState extends State<ResultScreen>
   }
 
   String _buildText() {
-    if (widget.cachedText != null) return widget.cachedText!;
-    final buf = StringBuffer();
-    for (int li = 0; li < widget.lines.length; li++) {
-      final line = widget.lines[li];
-      for (int wi = 0; wi < line.words.length; wi++) {
-        if (wi > 0) buf.write(' ');
-        bool capitalNext = false;
-        bool numberMode = false;
-        for (final cell in line.words[wi].cells) {
-          final id = cell.detection.classId;
-          final raw = classIdToChar(id, _language);
-          if (raw == '') {
-            final dots = id + 1;
-            if (dots == 0x20) {
-              capitalNext = true;
-              continue;
-            }
-            if (dots == 0x3C) {
-              numberMode = true;
-              continue;
-            }
-            continue;
-          }
-          if (raw == '?') continue;
-          String ch = raw;
-          if (capitalNext && ch.length == 1) {
-            ch = ch.toUpperCase();
-            capitalNext = false;
-          }
-          if (numberMode && _language == BrailleLanguage.english) {
-            const numMap = {
-              'a': '1',
-              'b': '2',
-              'c': '3',
-              'd': '4',
-              'e': '5',
-              'f': '6',
-              'g': '7',
-              'h': '8',
-              'i': '9',
-              'j': '0',
-            };
-            ch = numMap[ch] ?? ch;
-            if (!RegExp(r'[a-j]').hasMatch(raw)) numberMode = false;
-          }
-          buf.write(ch);
-        }
-      }
-      if (li < widget.lines.length - 1) buf.write('\n');
+    if (widget.cachedText != null && _language == BrailleLanguage.english) {
+      return widget.cachedText!;
     }
-    return buf.toString();
+    return buildTextFromLines(widget.lines, _language);
   }
 
   void _onImageLoaded(ImageInfo info, bool _) {
     if (_imgW != null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _imgW = info.image.width.toDouble();
           _imgH = info.image.height.toDouble();
         });
+      }
     });
   }
 
@@ -194,6 +149,8 @@ class _ResultScreenState extends State<ResultScreen>
             language: _language,
             imgW: _imgW,
             imgH: _imgH,
+            showBBoxes: _showBBoxes,
+            onToggleBBoxes: (v) => setState(() => _showBBoxes = v),
             onImageLoaded: _onImageLoaded,
             repaintKey: _imageRepaintKey,
           ),
@@ -202,6 +159,10 @@ class _ResultScreenState extends State<ResultScreen>
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Text tab
+// ---------------------------------------------------------------------------
 
 class _TextTab extends StatelessWidget {
   final String text;
@@ -264,12 +225,18 @@ class _TextTab extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Image tab
+// ---------------------------------------------------------------------------
+
 class _ImageTab extends StatelessWidget {
   final File imageFile;
   final List<Detection> detections;
   final List<BrailleLine> lines;
   final BrailleLanguage language;
   final double? imgW, imgH;
+  final bool showBBoxes;
+  final ValueChanged<bool> onToggleBBoxes;
   final void Function(ImageInfo, bool) onImageLoaded;
   final GlobalKey repaintKey;
 
@@ -280,6 +247,8 @@ class _ImageTab extends StatelessWidget {
     required this.language,
     required this.imgW,
     required this.imgH,
+    required this.showBBoxes,
+    required this.onToggleBBoxes,
     required this.onImageLoaded,
     required this.repaintKey,
   });
@@ -291,33 +260,73 @@ class _ImageTab extends StatelessWidget {
         .resolve(const ImageConfiguration())
         .addListener(ImageStreamListener(onImageLoaded));
 
-    return RepaintBoundary(
-      key: repaintKey,
-      child: Stack(
-        children: [
-          Positioned.fill(child: image),
-          if (detections.isNotEmpty && imgW != null && imgH != null)
-            Positioned.fill(
-              child: CustomPaint(
-                painter: BBoxPainter(
-                  detections: detections,
-                  lines: lines,
-                  language: language,
-                  imageWidth: imgW!,
-                  imageHeight: imgH!,
-                  fit: BoxFit.contain,
+    return Column(
+      children: [
+        // ── Toggle bar ──────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg,
+            vertical: AppSpacing.sm,
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.grid_on_rounded, size: 16, color: context.textMuted),
+              const SizedBox(width: 8),
+              Text(
+                'Bounding boxes',
+                style: context.text.bodyMedium?.copyWith(
+                  color: context.textMuted,
                 ),
               ),
+              const Spacer(),
+              Switch.adaptive(
+                value: showBBoxes,
+                onChanged: onToggleBBoxes,
+                activeColor: context.accent,
+              ),
+            ],
+          ),
+        ),
+        // ── Image ────────────────────────────────────────────────────────
+        Expanded(
+          child: RepaintBoundary(
+            key: repaintKey,
+            child: Stack(
+              children: [
+                Positioned.fill(child: image),
+                if (showBBoxes &&
+                    detections.isNotEmpty &&
+                    imgW != null &&
+                    imgH != null)
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: BBoxPainter(
+                        detections: detections,
+                        lines: lines,
+                        language: language,
+                        imageWidth: imgW!,
+                        imageHeight: imgH!,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+              ],
             ),
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 }
 
+// ---------------------------------------------------------------------------
+// Language picker
+// ---------------------------------------------------------------------------
+
 class _LanguagePicker extends StatelessWidget {
   final BrailleLanguage value;
   final ValueChanged<BrailleLanguage> onChanged;
+
   const _LanguagePicker({required this.value, required this.onChanged});
 
   @override
@@ -347,6 +356,10 @@ class _LanguagePicker extends StatelessWidget {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Copy button
+// ---------------------------------------------------------------------------
 
 class _CopyButton extends StatefulWidget {
   final String text;
