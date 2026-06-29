@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../services/tflite_service.dart';
 import 'line_reconstructor.dart';
@@ -13,6 +14,12 @@ class BBoxPainter extends CustomPainter {
   final int sensorRotation;
   final bool isFrontCamera;
 
+  /// When false only labels are drawn; bounding-box strokes are skipped.
+  final bool showBoxes;
+
+  /// Pre-computed annotation colour (complementary to image's dominant colour).
+  final Color annotationColor;
+
   const BBoxPainter({
     required this.detections,
     required this.lines,
@@ -22,28 +29,20 @@ class BBoxPainter extends CustomPainter {
     this.fit = BoxFit.contain,
     this.sensorRotation = 0,
     this.isFrontCamera = false,
+    this.showBoxes = true,
+    this.annotationColor = Colors.black,
   });
 
-  static final _boxPaint = Paint()
-    ..style = PaintingStyle.stroke
-    ..strokeWidth = 0.8
-    ..color = const Color(0xFF7B9E87);
-
-  static final _bgPaint = Paint()
-    ..style = PaintingStyle.fill
-    ..color = const Color(0xFF7B9E87);
-
   static const _labelStyle = TextStyle(
-    color: Color(0xFFFAFAF8),
-    fontSize: 7,
-    fontWeight: FontWeight.w700,
-    height: 1,
+    fontWeight: FontWeight.w900,
+    height: 1.2,
   );
 
   @override
   void paint(Canvas canvas, Size size) {
     if (detections.isEmpty) return;
 
+    // ── canvas transform ───────────────────────────────────────────────────
     final bool rotated = sensorRotation == 90 || sensorRotation == 270;
     final double canvasW = rotated ? size.height : size.width;
     final double canvasH = rotated ? size.width : size.height;
@@ -51,7 +50,7 @@ class BBoxPainter extends CustomPainter {
     canvas.save();
     if (sensorRotation != 0) {
       canvas.translate(size.width / 2, size.height / 2);
-      canvas.rotate(-sensorRotation * (3.141592653589793 / 180));
+      canvas.rotate(-sensorRotation * (math.pi / 180));
       canvas.translate(-canvasW / 2, -canvasH / 2);
     }
     if (isFrontCamera) {
@@ -59,6 +58,7 @@ class BBoxPainter extends CustomPainter {
       canvas.scale(-1, 1);
     }
 
+    // ── scale / offset ─────────────────────────────────────────────────────
     final effectiveSize = Size(canvasW, canvasH);
     final imageAspect = imageWidth / imageHeight;
     final widgetAspect = effectiveSize.width / effectiveSize.height;
@@ -85,6 +85,25 @@ class BBoxPainter extends CustomPainter {
     final offsetX = (effectiveSize.width - renderWidth) / 2;
     final offsetY = (effectiveSize.height - renderHeight) / 2;
 
+    // ── paints ────────────────────────────────────────────────────────────
+    final boxPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.6
+      ..color = annotationColor;
+
+    // ── calculate anti-scale factor ───────────────────────────────────────
+    final matrix = canvas.getTransform();
+
+    // index 0 is m11 (X scale), index 1 is m12 (X shear)
+    final double scaleX = math.sqrt(
+      matrix[0] * matrix[0] + matrix[1] * matrix[1],
+    );
+
+    // Dynamic scale helper
+    final double padding = 1.0 / (scaleX > 0 ? scaleX : 1.0);
+    const double baseTargetFontSize = 9.0;
+
+    // ── draw ──────────────────────────────────────────────────────────────
     for (final det in detections) {
       final rect = Rect.fromLTRB(
         offsetX + det.x1 * renderWidth,
@@ -92,28 +111,52 @@ class BBoxPainter extends CustomPainter {
         offsetX + det.x2 * renderWidth,
         offsetY + det.y2 * renderHeight,
       );
-      canvas.drawRect(rect, _boxPaint);
 
+      // Bounding-box stroke — toggle-able
+      if (showBoxes) {
+        canvas.drawRect(rect, boxPaint);
+      }
+
+      // Label — always visible, no background
       final char = classIdToChar(det.classId, language);
       if (char.isEmpty || char == '?') continue;
 
+      // ── Character Specific Font Scaling ─────────────────────────────────
+      double sizeMultiplier = 1.0;
+      final lowerChar = char.toLowerCase();
+
+      // Added raw dots checking alongside string flags in case mapping variations pop up
+      if (lowerChar == '[caps]' ||
+          lowerChar == '[num]' ||
+          char == '⠠' ||
+          char == '⠼') {
+        sizeMultiplier = 0.75;
+      }
+
+      final double targetDeviceFontSize = baseTargetFontSize * sizeMultiplier;
+      final double counterScaledFontSize = scaleX > 0
+          ? (targetDeviceFontSize / scaleX)
+          : targetDeviceFontSize;
+
+      final labelStyle = _labelStyle.copyWith(
+        color: annotationColor,
+        fontSize: counterScaledFontSize,
+      );
+      // ────────────────────────────────────────────────────────────────────
+
       final tp = TextPainter(
-        text: TextSpan(text: char, style: _labelStyle),
+        text: TextSpan(text: char, style: labelStyle),
         textDirection: TextDirection.ltr,
       )..layout();
 
-      const hPad = 3.0;
-      const vPad = 2.0;
-      final labelW = tp.width + hPad * 2;
-      final labelH = tp.height + vPad * 2;
+      // Place label just above the box using the custom counter-scaled layout padding
+      final labelX = rect.left + padding;
+      final labelY = rect.top - tp.height - padding;
 
-      final labelRect = Rect.fromLTWH(rect.left, rect.top, labelW, labelH);
-
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(labelRect, const Radius.circular(2)),
-        _bgPaint,
+      tp.paint(
+        canvas,
+        Offset(labelX, labelY < 0 ? rect.top + padding : labelY),
       );
-      tp.paint(canvas, Offset(rect.left + hPad, rect.top + vPad));
     }
 
     canvas.restore();
@@ -125,5 +168,7 @@ class BBoxPainter extends CustomPainter {
       old.language != language ||
       old.sensorRotation != sensorRotation ||
       old.fit != fit ||
-      old.isFrontCamera != isFrontCamera;
+      old.isFrontCamera != isFrontCamera ||
+      old.showBoxes != showBoxes ||
+      old.annotationColor != annotationColor;
 }

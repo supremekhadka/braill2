@@ -49,7 +49,7 @@ const Map<int, String> _englishMap = {
   53: '(',
   33: '?',
   // Indicators (sentinel values — consumed by the text-builder, not emitted)
-  59: '[NUMBER]',
+  59: '[NUM]',
   31: '[CAPS]',
 };
 
@@ -68,7 +68,7 @@ String classIdToChar(int classId, BrailleLanguage language) {
 }
 
 const String kIndicatorCaps = '[CAPS]';
-const String kIndicatorNumber = '[NUMBER]';
+const String kIndicatorNumber = '[NUM]';
 
 const Map<String, String> kBrailleLetterToDigit = {
   'a': '1',

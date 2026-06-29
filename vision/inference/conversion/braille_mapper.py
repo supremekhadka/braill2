@@ -5,7 +5,7 @@ def apply_braille_rules(text_line: str) -> str:
     Indicators consumed:
       [CAPS][CAPS]  — enter word-level uppercase mode
       [CAPS]        — capitalise the single following letter
-      [NUMBER]      — enter numeric mode; maps a–j -> 1–0 until a space or punctuation
+      [NUM]      — enter numeric mode; maps a–j -> 1–0 until a space or punctuation
     """
     i = 0
     output = ""
@@ -25,9 +25,9 @@ def apply_braille_rules(text_line: str) -> str:
                 i += 1
             continue
 
-        if text_line.startswith("[NUMBER]", i):
+        if text_line.startswith("[NUM]", i):
             number_mode = True
-            i += len("[NUMBER]")
+            i += len("[NUM]")
             continue
 
         ch = text_line[i]

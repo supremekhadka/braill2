@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -39,11 +41,15 @@ class _ResultScreenState extends State<ResultScreen>
   final GlobalKey _imageRepaintKey = GlobalKey();
   double? _imgW, _imgH;
 
+  /// Dominant complementary colour sampled from the scanned image.
+  Color _annotationColor = Colors.black;
+
   @override
   void initState() {
     super.initState();
     _language = widget.initialLanguage;
     _tabs = TabController(length: 2, vsync: this);
+    _computeAnnotationColor();
   }
 
   @override
@@ -51,6 +57,68 @@ class _ResultScreenState extends State<ResultScreen>
     _tabs.dispose();
     super.dispose();
   }
+
+  // ── colour computation ──────────────────────────────────────────────────
+
+  /// Samples a small version of the image, computes its average colour,
+  /// then returns the complementary colour.
+  Future<void> _computeAnnotationColor() async {
+    try {
+      final bytes = await widget.imageFile.readAsBytes();
+      final codec = await ui.instantiateImageCodec(
+        bytes,
+        targetWidth: 64, // tiny sample — fast
+        targetHeight: 64,
+      );
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+
+      final byteData = await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
+      if (byteData == null) return;
+
+      final pixels = byteData.buffer.asUint8List();
+      int r = 0, g = 0, b = 0;
+      final count = pixels.length ~/ 4;
+      for (int i = 0; i < pixels.length; i += 4) {
+        r += pixels[i];
+        g += pixels[i + 1];
+        b += pixels[i + 2];
+      }
+
+      final avgR = (r / count).round();
+      final avgG = (g / count).round();
+      final avgB = (b / count).round();
+
+      // Complementary = 255 − channel
+      final compR = 255 - avgR;
+      final compG = 255 - avgG;
+      final compB = 255 - avgB;
+
+      // Ensure the colour is dark enough to be legible (min contrast).
+      // If the complement is too light (luminance > 0.7) darken it.
+      final lum = (0.299 * compR + 0.587 * compG + 0.114 * compB) / 255;
+      Color color;
+      if (lum > 0.7) {
+        // Blend toward black
+        color = Color.fromARGB(
+          255,
+          (compR * 0.4).round(),
+          (compG * 0.4).round(),
+          (compB * 0.4).round(),
+        );
+      } else {
+        color = Color.fromARGB(255, compR, compG, compB);
+      }
+
+      if (mounted) setState(() => _annotationColor = color);
+    } catch (_) {
+      // On any error keep the default black.
+    }
+  }
+
+  // ── helpers ─────────────────────────────────────────────────────────────
 
   String _buildText() {
     if (widget.cachedText != null && _language == BrailleLanguage.english) {
@@ -104,6 +172,8 @@ class _ResultScreenState extends State<ResultScreen>
     }
   }
 
+  // ── build ────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final text = _buildText();
@@ -150,6 +220,7 @@ class _ResultScreenState extends State<ResultScreen>
             imgW: _imgW,
             imgH: _imgH,
             showBBoxes: _showBBoxes,
+            annotationColor: _annotationColor,
             onToggleBBoxes: (v) => setState(() => _showBBoxes = v),
             onImageLoaded: _onImageLoaded,
             repaintKey: _imageRepaintKey,
@@ -163,7 +234,6 @@ class _ResultScreenState extends State<ResultScreen>
 // ---------------------------------------------------------------------------
 // Text tab
 // ---------------------------------------------------------------------------
-
 class _TextTab extends StatelessWidget {
   final String text;
   const _TextTab({required this.text});
@@ -228,7 +298,6 @@ class _TextTab extends StatelessWidget {
 // ---------------------------------------------------------------------------
 // Image tab
 // ---------------------------------------------------------------------------
-
 class _ImageTab extends StatelessWidget {
   final File imageFile;
   final List<Detection> detections;
@@ -236,6 +305,7 @@ class _ImageTab extends StatelessWidget {
   final BrailleLanguage language;
   final double? imgW, imgH;
   final bool showBBoxes;
+  final Color annotationColor;
   final ValueChanged<bool> onToggleBBoxes;
   final void Function(ImageInfo, bool) onImageLoaded;
   final GlobalKey repaintKey;
@@ -248,6 +318,7 @@ class _ImageTab extends StatelessWidget {
     required this.imgW,
     required this.imgH,
     required this.showBBoxes,
+    required this.annotationColor,
     required this.onToggleBBoxes,
     required this.onImageLoaded,
     required this.repaintKey,
@@ -259,6 +330,10 @@ class _ImageTab extends StatelessWidget {
     image.image
         .resolve(const ImageConfiguration())
         .addListener(ImageStreamListener(onImageLoaded));
+
+    // Always paint the CustomPaint layer so labels are always visible.
+    // showBBoxes is forwarded to BBoxPainter which only uses it for strokes.
+    final showPainter = detections.isNotEmpty && imgW != null && imgH != null;
 
     return Column(
       children: [
@@ -294,10 +369,7 @@ class _ImageTab extends StatelessWidget {
             child: Stack(
               children: [
                 Positioned.fill(child: image),
-                if (showBBoxes &&
-                    detections.isNotEmpty &&
-                    imgW != null &&
-                    imgH != null)
+                if (showPainter)
                   Positioned.fill(
                     child: CustomPaint(
                       painter: BBoxPainter(
@@ -307,6 +379,8 @@ class _ImageTab extends StatelessWidget {
                         imageWidth: imgW!,
                         imageHeight: imgH!,
                         fit: BoxFit.contain,
+                        showBoxes: showBBoxes, // ← boxes only toggle
+                        annotationColor: annotationColor,
                       ),
                     ),
                   ),
@@ -322,11 +396,9 @@ class _ImageTab extends StatelessWidget {
 // ---------------------------------------------------------------------------
 // Language picker
 // ---------------------------------------------------------------------------
-
 class _LanguagePicker extends StatelessWidget {
   final BrailleLanguage value;
   final ValueChanged<BrailleLanguage> onChanged;
-
   const _LanguagePicker({required this.value, required this.onChanged});
 
   @override
@@ -360,7 +432,6 @@ class _LanguagePicker extends StatelessWidget {
 // ---------------------------------------------------------------------------
 // Copy button
 // ---------------------------------------------------------------------------
-
 class _CopyButton extends StatefulWidget {
   final String text;
   const _CopyButton({required this.text});
