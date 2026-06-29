@@ -7,3 +7,4 @@ venv
 experiments
 .env
 storage/
+.pytest_cache
