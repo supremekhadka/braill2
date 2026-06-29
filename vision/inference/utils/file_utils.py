@@ -1,4 +1,4 @@
-import imghdr
+import filetype
 import json
 import struct
 from pathlib import Path
@@ -14,7 +14,7 @@ def image_dimensions(image_path: str) -> tuple[int, int]:
     Return (height, width) without decoding pixel data where possible.
     Reads only the header bytes for PNG and JPEG.
     """
-    kind = imghdr.what(image_path)
+    kind = filetype.guess(image_path)
 
     if kind == "png":
         with open(image_path, "rb") as f:
