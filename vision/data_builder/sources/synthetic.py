@@ -16,7 +16,6 @@ class BrailleGenerator:
         img_size: tuple[int, int] = (1448, 1024),
         scale: float | None = None,
         small_scale_ratio: float = 0.35,
-        with_verso_ratio: float = 0.70,
         bbox_pad_mm: float = 0.25,
     ) -> None:
         self.img_size = img_size
@@ -57,7 +56,7 @@ class BrailleGenerator:
         h, w = bump.shape
         if mode == "worn":
             # uniform height loss — dot pressed flatter over time
-            return bump * random.uniform(0.6, 0.9)
+            return bump * random.uniform(0.5, 0.8)
 
         if mode == "smear":
             # directional motion blur simulating rubbed/dragged ink
@@ -142,8 +141,8 @@ class BrailleGenerator:
 
     def generate_paper_texture(self) -> np.ndarray:
         """Return a float32 2-D array simulating paper grain and cloud noise."""
-        texture = np.full(self.img_size, 1.1, dtype=np.float32)
-        grain = np.random.normal(0, 0.035, self.img_size)
+        texture = np.full(self.img_size, 1.01, dtype=np.float32)
+        grain = np.random.normal(0, 0.0275, self.img_size)
         small_noise = np.random.normal(
             0, 0.08, (self.img_size[0] // 20, self.img_size[1] // 20)
         )
@@ -348,8 +347,8 @@ class BrailleGenerator:
 
                     for i, bit in enumerate(bit_str):
                         if bit == "1":
-                            jx = random.uniform(-0.025, 0.025) * self.scale
-                            jy = random.uniform(-0.025, 0.025) * self.scale
+                            jx = random.uniform(-0.02, 0.02) * self.scale if random.random() < 0.5 else 0.0
+                            jy = random.uniform(-0.02, 0.02) * self.scale if random.random() < 0.5 else 0.0
                             dx = (i // 3) * self.px_h_dot + jx
                             dy = (i % 3) * self.px_v_dot + jy
                             y_c, x_c = int(py + dy), int(px + dx)
@@ -378,8 +377,8 @@ class BrailleGenerator:
 
                     for i, bit in enumerate(v_bit_str):
                         if bit == "1":
-                            jx = random.uniform(-0.025, 0.025) * self.scale
-                            jy = random.uniform(-0.025, 0.025) * self.scale
+                            jx = random.uniform(-0.02, 0.02) * self.scale if random.random() < 0.5 else 0.0
+                            jy = random.uniform(-0.02, 0.02) * self.scale if random.random() < 0.5 else 0.0
                             dx = (i // 3) * self.px_h_dot + jx
                             dy = (i % 3) * self.px_v_dot + jy
                             y_c, x_c = int(vy + dy), int(vx + dx)
@@ -405,7 +404,7 @@ class BrailleGenerator:
 
 
         wear_map = self.generate_wear_map()
-        wear_strength = .3
+        wear_strength = .5
         recto_h *= (1.0 - wear_map * wear_strength)
         total_h = recto_h * 1.0 - verso_h * 0.8
         # blur_px = max(1, int(round(self.scale * 0.05)))
@@ -448,7 +447,7 @@ class BrailleGenerator:
         # shadow_intensity = min(light_intensity * random.uniform(0.3, 0.6), 0.15)
         shading -= recto_shadow * shadow_intensity
 
-        light_gradient = self.generate_light_gradient(light_azimuth, strength=random.uniform(0.12, 0.25))
+        light_gradient = self.generate_light_gradient(light_azimuth, strength=random.uniform(0.15, 0.25))
 
         verso_darkness_factor = 0.20
         final = self.generate_paper_texture() + shading + light_gradient - (verso_h * verso_darkness_factor)
@@ -496,7 +495,7 @@ class BrailleGenerator:
 
         final_uint8 = (np.clip(final_bgr, 0, 1) * 255).astype(np.uint8)
         return final_uint8, yolo_annotations
-    
+     
 def _parse_yolo_strings(annotation_strings: list[str]) -> list[BBox]:
     """Convert BrailleGenerator's raw string output into canonical BBox objects."""
     boxes: list[BBox] = []
