@@ -8,3 +8,5 @@ experiments
 .env
 storage/
 .pytest_cache
+
+.venv
