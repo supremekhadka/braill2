@@ -58,7 +58,7 @@ pip install -r requirements.txt
 In the root directory, run the build command as a module:
 
 ```
-python -m vision.data_builder.main --num-synthetic 400
+python -m vision.data_builder.main --num-synthetic 400 --seed 42
 ```
 
 ### Train Model

@@ -108,7 +108,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=DEFAULT_SEED,
-        help="Random seed for reproducibility (default: 42).",
+        help="Random seed for reproducibility (default: 42). Used for both "
+             "dataset splitting and synthetic page generation.",
     )
 
     p.add_argument(
@@ -194,6 +195,7 @@ def _run_synthetic(args: argparse.Namespace) -> None:
         output_root=args.unified_path,
         num_samples=args.num_synthetic,
         prefix=args.synthetic_prefix,
+        seed=args.seed,
     )
 
 def _run_split(args: argparse.Namespace) -> None:
