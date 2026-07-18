@@ -14,7 +14,6 @@ INFERENCE_CONFIG = {
     "confidence": 0.4,
     "nms_iou": 0.1,
     "label_mode": "en",
-    "visualize": False,
     "binary_map": "configs/data.yaml",
     "braille_map": "configs/braille.yaml",
     "label_map": "configs/braille.yaml"
@@ -42,7 +41,7 @@ def build_parser():
         default=INFERENCE_CONFIG["label_mode"],
     )
 
-    p.add_argument("--visualize", action="store_true", default=INFERENCE_CONFIG["visualize"])
+    p.add_argument("--visualize", action="store_true")
 
     p.add_argument("--label-map", type=str, default=INFERENCE_CONFIG["label_map"])
 

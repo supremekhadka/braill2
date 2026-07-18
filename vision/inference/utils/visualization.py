@@ -79,6 +79,7 @@ def render_from_json(
     label_map_path: str,
 ) -> np.ndarray:
     img = cv2.imread(image_path)
+    h, w = img.shape[:2]
 
     if img is None:
         raise FileNotFoundError(f"Cannot read image: {image_path}")
@@ -93,10 +94,10 @@ def render_from_json(
 
         _draw_detection(
             img,
-            int(r["x1"]),
-            int(r["y1"]),
-            int(r["x2"]),
-            int(r["y2"]),
+            int(r["x1"] * w),
+            int(r["y1"] * h),
+            int(r["x2"] * w),
+            int(r["y2"] * h),
             label,
         )
 
