@@ -1,8 +1,10 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:cunning_document_scanner_plus/cunning_document_scanner_plus.dart';
+
 import '../core/app_theme.dart';
 import '../core/braille_mappings.dart';
 import '../core/line_reconstructor.dart';
@@ -10,16 +12,25 @@ import '../models/api_models.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/tflite_service.dart' show Detection;
+import 'batch_result_screen.dart';
 import 'result_screen.dart';
 import 'login_screen.dart';
 
+/// Max images accepted per batch inference request. Keep this in sync with
+/// BATCH_SIZE in backend/app/core/configs.py.
+const int kBatchSize = 10;
+
 ///   1. On init, check auth → redirect to [LoginScreen] if not logged in.
-///   2. Open the document scanner.
-///   3. Upload the image (`POST /api/image/upload`).
-///   4. Request server-side inference (`POST /api/inference/predict`).
-///   5. Normalise the server's absolute-pixel annotations → 0.0–1.0
-///      fractions of image width/height for [BBoxPainter] reuse.
-///   6. Push [ResultScreen] (shared with offline mode).
+///   2. Open the document scanner — one page in single mode, up to
+///      [kBatchSize] pages in batch mode.
+///   3. Upload the image(s) (`POST /api/image/upload`).
+///   4. Request server-side inference — single
+///      (`POST /api/inference/predict`) or batch
+///      (`POST /api/inference/predict/batch`).
+///   5. Server annotations already arrive as 0.0–1.0 fractions of image
+///      width/height, ready for [BBoxPainter] reuse.
+///   6. Push [ResultScreen] (single, shared with offline mode) or
+///      [BatchResultScreen] (batch).
 class OnlineCaptureScreen extends StatefulWidget {
   final AuthService authService;
   final ApiClient apiClient;
@@ -34,11 +45,14 @@ class OnlineCaptureScreen extends StatefulWidget {
   State<OnlineCaptureScreen> createState() => _OnlineCaptureScreenState();
 }
 
+enum _CaptureMode { single, batch }
+
 class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
   bool _isLoading = false;
   _Step _step = _Step.idle;
   String? _errorMessage;
   BrailleLanguage _language = BrailleLanguage.english;
+  _CaptureMode _mode = _CaptureMode.single;
 
   @override
   void initState() {
@@ -47,17 +61,16 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
 
   Future<void> _onScanTap() async {
     if (_isLoading) return;
-
     setState(() {
       _isLoading = true;
       _step = _Step.scanning;
       _errorMessage = null;
     });
 
-    String? scannedPath;
+    List<String>? pictures;
     try {
-      final pictures = await CunningDocumentScanner.getPictures(
-        noOfPages: 1,
+      pictures = await CunningDocumentScanner.getPictures(
+        noOfPages: _mode == _CaptureMode.batch ? kBatchSize : 1,
         isGalleryImportAllowed: true,
         mode: ScannerMode.base,
       );
@@ -65,16 +78,22 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
         _resetIdle();
         return;
       }
-      scannedPath = pictures.first;
     } catch (e) {
       _resetWithError('Scanner error: $e');
       return;
     }
 
+    if (_mode == _CaptureMode.batch) {
+      await _runBatch(pictures);
+    } else {
+      await _runSingle(pictures.first);
+    }
+  }
+
+  Future<void> _runSingle(String scannedPath) async {
     final imageFile = File(scannedPath);
 
     setState(() => _step = _Step.uploading);
-
     ImageResponse uploaded;
     try {
       uploaded = await widget.apiClient.uploadImage(
@@ -90,7 +109,6 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
     }
 
     setState(() => _step = _Step.predicting);
-
     InferenceResponse result;
     try {
       result = await widget.apiClient.predict(
@@ -107,25 +125,19 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
     }
 
     setState(() => _step = _Step.processing);
-
     List<Detection> detections = [];
     List<BrailleLine> lines = [];
-
     try {
-      final bytes = await imageFile.readAsBytes();
-      final (imgW, imgH) = await _imageDimensions(bytes);
-
       detections = result.annotations.map((a) {
         return Detection(
-          x1: (a.x1 / imgW).clamp(0.0, 1.0),
-          y1: (a.y1 / imgH).clamp(0.0, 1.0),
-          x2: (a.x2 / imgW).clamp(0.0, 1.0),
-          y2: (a.y2 / imgH).clamp(0.0, 1.0),
+          x1: a.x1.clamp(0.0, 1.0),
+          y1: a.y1.clamp(0.0, 1.0),
+          x2: a.x2.clamp(0.0, 1.0),
+          y2: a.y2.clamp(0.0, 1.0),
           confidence: 1.0, // server doesn't return confidence scores
           classId: a.classId,
         );
       }).toList();
-
       if (detections.isNotEmpty) {
         lines = LineReconstructor.reconstruct(detections);
       }
@@ -135,7 +147,6 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
 
     _resetIdle();
     if (!mounted) return;
-
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -145,6 +156,106 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
           lines: lines,
           initialLanguage: _language,
           cachedText: result.extractedText,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _runBatch(List<String> scannedPaths) async {
+    var paths = scannedPaths;
+    if (paths.length > kBatchSize) {
+      paths = paths.take(kBatchSize).toList();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Only the first $kBatchSize images will be processed'),
+          ),
+        );
+      }
+    }
+    final imageFiles = paths.map(File.new).toList();
+
+    setState(() => _step = _Step.uploading);
+    final uploaded = <ImageResponse>[];
+    try {
+      for (final file in imageFiles) {
+        uploaded.add(
+          await widget.apiClient.uploadImage(widget.authService.token!, file),
+        );
+      }
+    } on ApiException catch (e) {
+      _resetWithError('Upload failed (${e.statusCode}): ${e.message}');
+      return;
+    } catch (e) {
+      _resetWithError('Upload error: $e');
+      return;
+    }
+
+    setState(() => _step = _Step.predicting);
+    List<BatchInferenceResult> results;
+    try {
+      results = await widget.apiClient.predictBatch(
+        widget.authService.token!,
+        uploaded.map((u) => u.id).toList(),
+        _langCode(_language),
+      );
+    } on ApiException catch (e) {
+      _resetWithError('Batch inference failed (${e.statusCode}): ${e.message}');
+      return;
+    } catch (e) {
+      _resetWithError('Batch inference error: $e');
+      return;
+    }
+
+    setState(() => _step = _Step.processing);
+    final items = <BatchScanItem>[];
+    for (var i = 0; i < imageFiles.length; i++) {
+      final imageFile = imageFiles[i];
+      // The server returns results in the same order the image ids were
+      // sent (see run_batch_inference_service), which matches `uploaded`'s
+      // order, which in turn matches `imageFiles`.
+      final result = i < results.length ? results[i] : null;
+
+      List<Detection> detections = [];
+      List<BrailleLine> lines = [];
+       if (result != null) {
+        try {
+          detections = result.annotations.map((a) {
+            return Detection(
+              x1: a.x1.clamp(0.0, 1.0),
+              y1: a.y1.clamp(0.0, 1.0),
+              x2: a.x2.clamp(0.0, 1.0),
+              y2: a.y2.clamp(0.0, 1.0),
+              confidence: 1.0,
+              classId: a.classId,
+            );
+          }).toList();
+          if (detections.isNotEmpty) {
+            lines = LineReconstructor.reconstruct(detections);
+          }
+        } catch (_) {
+          // Non-fatal: fall through with empty detections for this image.
+        }
+      }
+
+      items.add(
+        BatchScanItem(
+          imageFile: imageFile,
+          detections: detections,
+          lines: lines,
+          extractedText: result?.extractedText ?? '',
+        ),
+      );
+    }
+
+    _resetIdle();
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BatchResultScreen(
+          items: items,
+          initialLanguage: _language,
         ),
       ),
     );
@@ -205,11 +316,110 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
               _ErrorBanner(message: _errorMessage!),
               const SizedBox(height: AppSpacing.md),
             ],
+            _ModeToggle(
+              mode: _mode,
+              enabled: !_isLoading,
+              onChanged: (m) => setState(() => _mode = m),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _mode == _CaptureMode.batch
+                  ? 'Scan or select up to $kBatchSize images at once'
+                  : 'Scan or upload a single image',
+              style: context.text.bodyMedium,
+            ),
+            const SizedBox(height: AppSpacing.md),
             _StepProgress(step: _step, visible: _isLoading),
             if (_isLoading) const SizedBox(height: AppSpacing.md),
             _ScanButton(loading: _isLoading, step: _step, onTap: _onScanTap),
             const SizedBox(height: AppSpacing.xl),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeToggle extends StatelessWidget {
+  final _CaptureMode mode;
+  final bool enabled;
+  final ValueChanged<_CaptureMode> onChanged;
+
+  const _ModeToggle({
+    required this.mode,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: context.bgSurfaceHigh,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.border),
+      ),
+      child: Row(
+        children: [
+          _ModeToggleOption(
+            label: 'Single',
+            selected: mode == _CaptureMode.single,
+            enabled: enabled,
+            onTap: () => onChanged(_CaptureMode.single),
+          ),
+          _ModeToggleOption(
+            label: 'Batch',
+            selected: mode == _CaptureMode.batch,
+            enabled: enabled,
+            onTap: () => onChanged(_CaptureMode.batch),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModeToggleOption extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  const _ModeToggleOption({
+    required this.label,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: '$label mode',
+        child: GestureDetector(
+          onTap: enabled ? onTap : null,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: selected ? context.accent.withOpacity(0.12) : null,
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: context.text.labelLarge?.copyWith(
+                color: selected
+                    ? context.accent
+                    : (enabled ? context.textMuted : context.textDisabled),
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -300,6 +510,7 @@ class _ScanButton extends StatelessWidget {
 class _StepProgress extends StatelessWidget {
   final _Step step;
   final bool visible;
+
   const _StepProgress({required this.step, required this.visible});
 
   static const _steps = [
@@ -344,6 +555,7 @@ class _StepProgress extends StatelessWidget {
 class _StepDot extends StatelessWidget {
   final bool done;
   final bool active;
+
   const _StepDot({required this.done, required this.active});
 
   @override
@@ -365,6 +577,7 @@ class _StepDot extends StatelessWidget {
 
 class _ErrorBanner extends StatelessWidget {
   final String message;
+
   const _ErrorBanner({required this.message});
 
   @override
@@ -401,6 +614,7 @@ class _ErrorBanner extends StatelessWidget {
 class _LanguagePicker extends StatelessWidget {
   final BrailleLanguage value;
   final ValueChanged<BrailleLanguage> onChanged;
+
   const _LanguagePicker({required this.value, required this.onChanged});
 
   @override

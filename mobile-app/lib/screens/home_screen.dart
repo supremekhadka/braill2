@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+
 import '../core/app_theme.dart';
 import '../services/auth_service.dart';
 import '../services/api_client.dart';
@@ -26,9 +29,41 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  bool _isConnected = true;
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _initConnectivity();
+    _connectivitySubscription =
+        Connectivity().onConnectivityChanged.listen(_updateConnectionStatus);
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription.cancel();
+    super.dispose();
+  }
+
+  Future<void> _initConnectivity() async {
+    final results = await Connectivity().checkConnectivity();
+    _updateConnectionStatus(results);
+  }
+
+  void _updateConnectionStatus(List<ConnectivityResult> results) {
+    if (!mounted) return;
+    setState(() {
+      // If the only result is 'none', there is no connection.
+      _isConnected = !results.contains(ConnectivityResult.none) || results.length > 1;
+    });
+  }
+
   void _refresh() => setState(() {});
 
   Future<void> _onOnlineTap() async {
+    if (!_isConnected) return; // Guard clause
+
     if (!widget.authService.isLoggedIn) {
       final loggedIn = await Navigator.push<bool>(
         context,
@@ -126,8 +161,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
               _ModeCard(
                 label: 'Online',
-                description: 'Server inference: faster, supports batches',
-                icon: Icons.cloud_outlined,
+                description: _isConnected 
+                    ? 'Server inference: faster, supports batches'
+                    : 'Server inference (No internet connection)',
+                icon: _isConnected ? Icons.cloud_outlined : Icons.cloud_off_outlined,
+                disabled: !_isConnected,
                 onTap: _onOnlineTap,
               ),
               const SizedBox(height: 14),
@@ -218,12 +256,14 @@ class _ModeCard extends StatelessWidget {
   final String description;
   final IconData icon;
   final VoidCallback onTap;
+  final bool disabled;
 
   const _ModeCard({
     required this.label,
     required this.description,
     required this.icon,
     required this.onTap,
+    this.disabled = false,
   });
 
   @override
@@ -231,44 +271,64 @@ class _ModeCard extends StatelessWidget {
     return Semantics(
       button: true,
       label: '$label inference. $description',
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(AppSpacing.lg),
-          decoration: BoxDecoration(
-            color: context.bgSurface,
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            border: Border.all(color: context.border),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: context.accent.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(AppRadius.md),
+      child: Opacity(
+        // Reduce opacity if disabled to give visual feedback
+        opacity: disabled ? 0.5 : 1.0, 
+        child: GestureDetector(
+          onTap: disabled ? null : onTap,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              color: disabled ? context.bgSurface.withOpacity(0.6) : context.bgSurface,
+              borderRadius: BorderRadius.circular(AppRadius.lg),
+              border: Border.all(
+                color: disabled ? context.border.withOpacity(0.5) : context.border,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: disabled
+                        ? context.textMuted.withOpacity(0.1)
+                        : context.accent.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                  ),
+                  child: Icon(
+                    icon, 
+                    color: disabled ? context.textMuted : context.accent, 
+                    size: 22,
+                  ),
                 ),
-                child: Icon(icon, color: context.accent, size: 22),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(label, style: context.text.headlineSmall),
-                    const SizedBox(height: 3),
-                    Text(description, style: context.text.bodyMedium),
-                  ],
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label, 
+                        style: context.text.headlineSmall?.copyWith(
+                          color: disabled ? context.textMuted : null,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        description, 
+                        style: context.text.bodyMedium,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Icon(
-                Icons.arrow_forward_ios_rounded,
-                size: 14,
-                color: context.textMuted,
-              ),
-            ],
+                Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  size: 14,
+                  color: disabled ? Colors.transparent : context.textMuted,
+                ),
+              ],
+            ),
           ),
         ),
       ),

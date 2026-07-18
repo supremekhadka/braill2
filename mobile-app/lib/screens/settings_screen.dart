@@ -239,7 +239,7 @@ class _ActionButton extends StatelessWidget {
       onTap: loading ? null : onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(vertical: 14),
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
         decoration: BoxDecoration(
           color: outlined
               ? Colors.transparent

@@ -8,6 +8,7 @@ class HistoryEntry {
   final String text;
   final String imagePath;
   final int detectionCount;
+  final List<Map<String, dynamic>> annotations; // new
 
   const HistoryEntry({
     required this.id,
@@ -16,6 +17,7 @@ class HistoryEntry {
     required this.text,
     required this.imagePath,
     required this.detectionCount,
+    this.annotations = const [],
   });
 
   Map<String, dynamic> toJson() => {
@@ -25,6 +27,7 @@ class HistoryEntry {
     'text': text,
     'imagePath': imagePath,
     'detectionCount': detectionCount,
+    'annotations': annotations,
   };
 
   factory HistoryEntry.fromJson(Map<String, dynamic> j) => HistoryEntry(
@@ -34,6 +37,11 @@ class HistoryEntry {
     text: j['text'] as String,
     imagePath: j['imagePath'] as String,
     detectionCount: j['detectionCount'] as int,
+    annotations: j['annotations'] == null
+        ? const []
+        : List<Map<String, dynamic>>.from(
+            (j['annotations'] as List).map((e) => Map<String, dynamic>.from(e)),
+          ),
   );
 }
 

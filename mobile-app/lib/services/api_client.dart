@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../models/api_models.dart';
 import 'settings_service.dart';
+import 'package:path_provider/path_provider.dart';
 
 class ApiClient {
   final SettingsService _settings;
@@ -80,7 +81,6 @@ class ApiClient {
     final request = http.MultipartRequest('POST', _uri('/api/image/upload'))
       ..headers[HttpHeaders.authorizationHeader] = 'Bearer $token'
       ..files.add(await http.MultipartFile.fromPath('file', imageFile.path));
-
     final streamed = await request.send();
     final response = await http.Response.fromStream(streamed);
     _assertOk(response);
@@ -88,6 +88,28 @@ class ApiClient {
       jsonDecode(response.body) as Map<String, dynamic>,
     );
   }
+
+  /// Public: full URL for a given image id (for use with Image.network + headers).
+  Uri imageUri(String imageId) => _uri('/api/image/$imageId');
+
+  Map<String, String> imageHeaders(String token) => {
+    HttpHeaders.authorizationHeader: 'Bearer $token',
+  };
+
+  /// Downloads an online-history image to a local temp file so it can be
+  /// reused with the existing File-based ResultScreen.
+  Future<File> downloadImage(String token, String imageId) async {
+    final response = await http.get(
+      imageUri(imageId),
+      headers: imageHeaders(token),
+    );
+    _assertOk(response);
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/online_$imageId.jpg');
+    await file.writeAsBytes(response.bodyBytes);
+    return file;
+  }
+
 
   /// POST /api/inference/predict
   /// [lang] must be one of the backend-allowed values: `"en"` or `"np"`.
@@ -107,6 +129,25 @@ class ApiClient {
     );
   }
 
+  /// POST /api/inference/predict/batch
+  Future<List<BatchInferenceResult>> predictBatch(
+    String token,
+    List<String> imageIds,
+    String lang,
+  ) async {
+    final response = await http.post(
+      _uri('/api/inference/predict/batch'),
+      headers: _authHeaders(token),
+      body: jsonEncode({'image_ids': imageIds, 'lang': lang}),
+    );
+    _assertOk(response);
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final results = decoded['results'] as List<dynamic>;
+    return results
+        .map((r) => BatchInferenceResult.fromJson(r as Map<String, dynamic>))
+        .toList();
+  }
+
   /// GET /api/inference/history
   Future<List<InferenceResponse>> getHistory(String token) async {
     final response = await http.get(
@@ -118,5 +159,14 @@ class ApiClient {
     return list
         .map((e) => InferenceResponse.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  /// DELETE /api/inference/history/{id}
+  Future<void> deleteHistoryEntry(String token, String predictionId) async {
+    final response = await http.delete(
+      _uri('/api/inference/history/$predictionId'),
+      headers: _authHeaders(token),
+    );
+    _assertOk(response);
   }
 }

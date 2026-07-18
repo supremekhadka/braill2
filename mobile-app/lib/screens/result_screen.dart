@@ -1,6 +1,4 @@
 import 'dart:io';
-import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -41,81 +39,17 @@ class _ResultScreenState extends State<ResultScreen>
   final GlobalKey _imageRepaintKey = GlobalKey();
   double? _imgW, _imgH;
 
-  /// Dominant complementary colour sampled from the scanned image.
-  Color _annotationColor = Colors.black;
-
   @override
   void initState() {
     super.initState();
     _language = widget.initialLanguage;
     _tabs = TabController(length: 2, vsync: this);
-    _computeAnnotationColor();
   }
 
   @override
   void dispose() {
     _tabs.dispose();
     super.dispose();
-  }
-
-  // ── colour computation ──────────────────────────────────────────────────
-
-  /// Samples a small version of the image, computes its average colour,
-  /// then returns the complementary colour.
-  Future<void> _computeAnnotationColor() async {
-    try {
-      final bytes = await widget.imageFile.readAsBytes();
-      final codec = await ui.instantiateImageCodec(
-        bytes,
-        targetWidth: 64, // tiny sample — fast
-        targetHeight: 64,
-      );
-      final frame = await codec.getNextFrame();
-      final image = frame.image;
-
-      final byteData = await image.toByteData(
-        format: ui.ImageByteFormat.rawRgba,
-      );
-      if (byteData == null) return;
-
-      final pixels = byteData.buffer.asUint8List();
-      int r = 0, g = 0, b = 0;
-      final count = pixels.length ~/ 4;
-      for (int i = 0; i < pixels.length; i += 4) {
-        r += pixels[i];
-        g += pixels[i + 1];
-        b += pixels[i + 2];
-      }
-
-      final avgR = (r / count).round();
-      final avgG = (g / count).round();
-      final avgB = (b / count).round();
-
-      // Complementary = 255 − channel
-      final compR = 255 - avgR;
-      final compG = 255 - avgG;
-      final compB = 255 - avgB;
-
-      // Ensure the colour is dark enough to be legible (min contrast).
-      // If the complement is too light (luminance > 0.7) darken it.
-      final lum = (0.299 * compR + 0.587 * compG + 0.114 * compB) / 255;
-      Color color;
-      if (lum > 0.7) {
-        // Blend toward black
-        color = Color.fromARGB(
-          255,
-          (compR * 0.4).round(),
-          (compG * 0.4).round(),
-          (compB * 0.4).round(),
-        );
-      } else {
-        color = Color.fromARGB(255, compR, compG, compB);
-      }
-
-      if (mounted) setState(() => _annotationColor = color);
-    } catch (_) {
-      // On any error keep the default black.
-    }
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────
@@ -220,7 +154,7 @@ class _ResultScreenState extends State<ResultScreen>
             imgW: _imgW,
             imgH: _imgH,
             showBBoxes: _showBBoxes,
-            annotationColor: _annotationColor,
+            annotationColor: Color.lerp(context.accent, Colors.black, 0.35)!,
             onToggleBBoxes: (v) => setState(() => _showBBoxes = v),
             onImageLoaded: _onImageLoaded,
             repaintKey: _imageRepaintKey,

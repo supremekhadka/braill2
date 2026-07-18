@@ -7,6 +7,23 @@ import '../services/api_client.dart';
 import '../models/api_models.dart';
 import 'result_screen.dart';
 import '../core/braille_mappings.dart';
+import '../core/line_reconstructor.dart';
+import '../services/tflite_service.dart' show Detection;
+
+List<Detection> _annotationsToDetections(List<AnnotationItem> items) {
+  return items
+      .map(
+        (a) => Detection(
+          x1: a.x1,
+          y1: a.y1,
+          x2: a.x2,
+          y2: a.y2,
+          confidence: 1.0, // not returned by the API; unused for rendering
+          classId: a.classId,
+        ),
+      )
+      .toList();
+}
 
 class HistoryScreen extends StatefulWidget {
   final AuthService authService;
@@ -97,20 +114,31 @@ class _HistoryScreenState extends State<HistoryScreen>
       );
       return;
     }
+    final detections = entry.annotations.map((a) {
+      return Detection(
+        x1: (a['x1'] as num).toDouble(),
+        y1: (a['y1'] as num).toDouble(),
+        x2: (a['x2'] as num).toDouble(),
+        y2: (a['y2'] as num).toDouble(),
+        confidence: 1.0,
+        classId: (a['class_id'] as num).toInt(),
+      );
+    }).toList();
+    final lines = LineReconstructor.reconstruct(detections);
+
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ResultScreen(
           imageFile: file,
-          detections: const [],
-          lines: const [],
+          detections: detections,
+          lines: lines,
           initialLanguage: BrailleLanguage.english,
           cachedText: entry.text,
         ),
       ),
     );
   }
-
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -248,6 +276,21 @@ class _OnlineTabState extends State<_OnlineTab> {
     }
   }
 
+  Future<void> _deleteEntry(String id) async {
+    final previous = _entries;
+    setState(() => _entries = _entries?.where((e) => e.id != id).toList());
+    try {
+      await widget.apiClient.deleteHistoryEntry(widget.authService.token!, id);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _entries = previous); // revert on failure
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not delete: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!widget.authService.isLoggedIn) {
@@ -306,11 +349,15 @@ class _OnlineTabState extends State<_OnlineTab> {
       padding: const EdgeInsets.all(AppSpacing.lg),
       itemCount: _entries!.length,
       separatorBuilder: (_, __) => const SizedBox(height: 12),
-      itemBuilder: (context, i) => _OnlineHistoryCard(entry: _entries![i]),
+      itemBuilder: (context, i) => _OnlineHistoryCard(
+        entry: _entries![i],
+        authService: widget.authService,
+        apiClient: widget.apiClient,
+        onDelete: () => _deleteEntry(_entries![i].id),
+      ),
     );
   }
 }
-
 // ── Shared sub-widgets ────────────────────────────────────────────────────────
 
 class _EmptyState extends StatelessWidget {
@@ -400,37 +447,40 @@ class _HistoryCard extends StatelessWidget {
       child: GestureDetector(
         onTap: onTap,
         child: Container(
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
             color: context.bgSurface,
             borderRadius: BorderRadius.circular(AppRadius.md),
             border: Border.all(color: context.border),
           ),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              const SizedBox(width: 10),
               ClipRRect(
-                borderRadius: const BorderRadius.horizontal(
-                  left: Radius.circular(AppRadius.md),
-                ),
+                borderRadius: BorderRadius.circular(AppRadius.sm),
                 child: SizedBox(
-                  width: 80,
-                  height: 80,
+                  width: 84,
+                  height: 84,
                   child: hasImage
                       ? Image.file(File(entry.imagePath), fit: BoxFit.cover)
                       : Container(
                           color: context.bgSurfaceHigh,
+                          alignment: Alignment.center,
                           child: Icon(
                             Icons.image_not_supported_outlined,
+                            size: 28,
                             color: context.textDisabled,
                           ),
                         ),
                 ),
               ),
-              const SizedBox(width: 14),
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  padding: const EdgeInsets.fromLTRB(14, 12, 4, 12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Row(
                         children: [
@@ -451,12 +501,16 @@ class _HistoryCard extends StatelessWidget {
                             : entry.text.replaceAll('\n', ' '),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: context.text.bodyLarge?.copyWith(fontSize: 14),
+                        style: context.text.bodyLarge?.copyWith(
+                          fontSize: 14,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         '${entry.detectionCount} cells',
-                        style: context.text.bodyMedium?.copyWith(fontSize: 12),
+                        style: context.text.bodyMedium?.copyWith(
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
@@ -479,43 +533,162 @@ class _HistoryCard extends StatelessWidget {
   }
 }
 
-class _OnlineHistoryCard extends StatelessWidget {
+class _OnlineHistoryCard extends StatefulWidget {
   final InferenceResponse entry;
+  final AuthService authService;
+  final ApiClient apiClient;
+  final VoidCallback onDelete;
 
-  const _OnlineHistoryCard({required this.entry});
+  const _OnlineHistoryCard({
+    required this.entry,
+    required this.authService,
+    required this.apiClient,
+    required this.onDelete,
+  });
+
+  @override
+  State<_OnlineHistoryCard> createState() => _OnlineHistoryCardState();
+}
+
+class _OnlineHistoryCardState extends State<_OnlineHistoryCard> {
+  bool _opening = false;
+
+  Future<void> _open(BuildContext context) async {
+    if (_opening) return;
+    setState(() => _opening = true);
+    try {
+      final token = widget.authService.token!;
+      final file = await widget.apiClient.downloadImage(
+        token,
+        widget.entry.imageId,
+      );
+      final detections = _annotationsToDetections(widget.entry.annotations);
+      final lines = LineReconstructor.reconstruct(detections);
+
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ResultScreen(
+            imageFile: file,
+            detections: detections,
+            lines: lines,
+            initialLanguage: BrailleLanguage.english,
+            cachedText: widget.entry.extractedText,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load image: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _opening = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.md),
-      decoration: BoxDecoration(
-        color: context.bgSurface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: context.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const _ModeChip(mode: 'Online'),
-              const Spacer(),
-              Text(
-                '${entry.annotations.length} cells',
-                style: context.text.bodyMedium?.copyWith(fontSize: 12),
+    final token = widget.authService.token!;
+    return GestureDetector(
+      onTap: () => _open(context),
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: context.bgSurface,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: context.border),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            const SizedBox(width: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+              child: SizedBox(
+                width: 84,
+                height: 84,
+                child: Image.network(
+                  widget.apiClient.imageUri(widget.entry.imageId).toString(),
+                  headers: widget.apiClient.imageHeaders(token),
+                  fit: BoxFit.cover,
+                  loadingBuilder: (ctx, child, progress) {
+                    if (progress == null) return child;
+                    return Container(
+                      color: context.bgSurfaceHigh,
+                      alignment: Alignment.center,
+                      child: const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  },
+                  errorBuilder: (_, __, ___) => Container(
+                    color: context.bgSurfaceHigh,
+                    alignment: Alignment.center,
+                    child: Icon(
+                      Icons.image_not_supported_outlined,
+                      size: 28,
+                      color: context.textDisabled,
+                    ),
+                  ),
+                ),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            entry.extractedText.trim().isEmpty
-                ? 'No text detected'
-                : entry.extractedText.replaceAll('\n', ' '),
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            style: context.text.bodyLarge?.copyWith(fontSize: 14),
-          ),
-        ],
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 4, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        const _ModeChip(mode: 'Online'),
+                        const Spacer(),
+                        Text(
+                          '${widget.entry.annotations.length} cells',
+                          style: context.text.bodyMedium?.copyWith(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      widget.entry.extractedText.trim().isEmpty
+                          ? 'No text detected'
+                          : widget.entry.extractedText.replaceAll('\n', ' '),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.text.bodyLarge?.copyWith(fontSize: 14),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_opening)
+              const Padding(
+                padding: EdgeInsets.only(right: 4),
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else
+              IconButton(
+                icon: Icon(
+                  Icons.close_rounded,
+                  size: 18,
+                  color: context.textDisabled,
+                ),
+                tooltip: 'Remove',
+                onPressed: widget.onDelete,
+              ),
+          ],
+        ),
       ),
     );
   }

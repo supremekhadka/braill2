@@ -84,19 +84,47 @@ class AnnotationItem {
 }
 
 class InferenceResponse {
+  final String id;
+  final String imageId;
   final String extractedText;
   final List<AnnotationItem> annotations;
 
   const InferenceResponse({
+    required this.id,
+    required this.imageId,
     required this.extractedText,
     required this.annotations,
   });
 
   factory InferenceResponse.fromJson(Map<String, dynamic> j) =>
       InferenceResponse(
+        id: j['id'] as String,
+        imageId: j['image_id'] as String,
         extractedText: j['extracted_text'] as String,
         annotations: (j['annotations'] as List<dynamic>)
             .map((e) => AnnotationItem.fromJson(e as Map<String, dynamic>))
             .toList(),
       );
+}
+
+class BatchInferenceResult {
+  final String imageId;
+  final String extractedText;
+  final List<AnnotationItem> annotations;
+ 
+  const BatchInferenceResult({
+    required this.imageId,
+    required this.extractedText,
+    required this.annotations,
+  });
+ 
+  factory BatchInferenceResult.fromJson(Map<String, dynamic> json) {
+    return BatchInferenceResult(
+      imageId: json['image_id'] as String,
+      extractedText: json['extracted_text'] as String,
+      annotations: (json['annotations'] as List<dynamic>)
+          .map((a) => AnnotationItem.fromJson(a as Map<String, dynamic>))
+          .toList(),
+    );
+  }
 }

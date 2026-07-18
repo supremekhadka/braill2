@@ -123,6 +123,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
           text: text,
           imagePath: scannedPath,
           detectionCount: detections.length,
+          annotations: detections
+              .map((d) => {
+                    'class_id': d.classId,
+                    'x1': d.x1,
+                    'y1': d.y1,
+                    'x2': d.x2,
+                    'y2': d.y2,
+                  })
+              .toList(),
         ),
       );
     }
