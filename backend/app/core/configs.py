@@ -4,7 +4,7 @@ class InferenceConfig:
     ALLOWED_LANGS = {"en", "np"}
 
     NEPALI_LABEL_MAP = "configs/nepali_braille.yaml"
-
+    BATCH_SIZE = 10
     BASE_CONFIG = {
         "model": "runs/train/weights/best.pt",
         "slice_size": 640,
@@ -43,7 +43,6 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE: int = 60 * 24 * 7 # 7 days
     JWT_ALGORITHM: str
-
     UPLOAD_DIR: str
 
     model_config = SettingsConfigDict(

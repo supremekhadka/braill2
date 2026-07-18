@@ -8,7 +8,8 @@ from backend.app.core.configs import settings
 from backend.app.models.image import Image
 
 
-UPLOAD_DIR = Path(settings.UPLOAD_DIR)
+# UPLOAD_DIR = Path(settings.UPLOAD_DIR)
+UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 def store_image(session, file_bytes: bytes, filename: str, user_id):

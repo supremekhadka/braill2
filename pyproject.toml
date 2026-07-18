@@ -9,16 +9,30 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi[standard]>=0.136.3",
+    "fastapi[standard]==0.136.3",
+    "filetype==1.2.0",
+    "httpx2==2.5.0",
+    "imagecodecs==2026.6.6",
     "ipykernel>=7.3.0",
     "matplotlib>=3.11.0",
-    "numpy>=2.4.6",
-    "opencv-python>=4.13.0.92",
+    "numpy==2.4.4",
+    "opencv-python==4.10.0.84",
     "pandas>=3.0.3",
-    "psycopg2-binary>=2.9.12",
-    "sqlmodel>=0.0.38",
+    "pillow==12.2.0",
+    "psycopg2-binary==2.9.12",
+    "pwdlib[argon2]==0.3.0",
+    "pyjwt==2.13.0",
+    "pytest==9.1.1",
+    "pytest-mock==3.15.1",
+    "python-dotenv==1.0.0",
+    "pyyaml==6.0.3",
+    "sahi==0.11.36",
+    "scikit-image==0.26.0",
+    "sqlalchemy==2.0.50",
+    "sqlmodel==0.0.37",
     "torch",
     "torchvision",
+    "ultralytics==8.4.59",
 ]
 
 [build-system]

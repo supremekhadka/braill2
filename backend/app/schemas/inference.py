@@ -15,5 +15,19 @@ class Annotations(BaseModel):
     y2: float
 
 class InferenceResponse(BaseModel):
+    id: UUID
+    image_id: UUID
     extracted_text: str
     annotations: List[Annotations]
+
+class BatchInferenceRequest(BaseModel):
+    image_ids: list[UUID]
+    lang: str
+ 
+ 
+class BatchInferenceResultItem(InferenceResponse):
+    image_id: UUID
+ 
+ 
+class BatchInferenceResponse(BaseModel):
+    results: list[BatchInferenceResultItem]

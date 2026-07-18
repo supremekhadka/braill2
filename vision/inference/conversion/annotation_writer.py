@@ -26,14 +26,15 @@ def to_yolo_lines(prediction_result, image_path: str) -> str:
     return "\n".join(lines)
 
 
-def to_detections_json(prediction_result) -> List[Dict[str, Any]]:
+def to_detections_json(prediction_result, image_path: str) -> List[Dict[str, Any]]:
+    h, w = image_dimensions(image_path)
     return [
         {
             "class_id": int(obj.category.id),
-            "x1": float(obj.bbox.minx),
-            "y1": float(obj.bbox.miny),
-            "x2": float(obj.bbox.maxx),
-            "y2": float(obj.bbox.maxy),
+            "x1": float(obj.bbox.minx) / w,
+            "y1": float(obj.bbox.miny) / h,
+            "x2": float(obj.bbox.maxx) / w,
+            "y2": float(obj.bbox.maxy) / h,
         }
         for obj in prediction_result.object_prediction_list
     ]

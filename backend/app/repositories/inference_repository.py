@@ -34,3 +34,11 @@ def get_predictions_by_user_id(session: Session, user_id: UUID):
     )
 
     return session.exec(statement).all()
+
+
+def get_prediction_by_id(session: Session, prediction_id: UUID):
+    return session.get(InferenceResult, prediction_id)
+
+def delete_prediction(session: Session, prediction: InferenceResult):
+    session.delete(prediction)
+    session.commit()
