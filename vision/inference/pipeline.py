@@ -4,7 +4,9 @@ from .processing.sahi_inference import load_model, run_sliced_inference
 from .conversion.annotation_writer import to_detections_json
 from .utils.file_utils import load_label_map
 from .conversion.text_construction import convert_detections_to_text
-from .processing.postprocess import filter_area_outliers, apply_global_nms, mad_filter_area_outliers
+# from .processing.postprocess import filter_area_outliers
+# from .processing.postprocess import mad_filter_area_outliers
+from .processing.postprocess import apply_global_nms
 
 DEFAULT_DEVICE = "cuda"
 
@@ -46,13 +48,13 @@ def pipeline_batch(
         )
 
         raw_detections = len(pred.object_prediction_list)
-        # n_area_removed = 0
+        n_area_removed = 0
         # n_removed = 0
         pred, n_removed = apply_global_nms(
             pred,
             iou_threshold=cfg["nms_iou"],
         )
-        pred, n_area_removed = mad_filter_area_outliers(pred, threshold=5)
+        # pred, n_area_removed = mad_filter_area_outliers(pred, threshold=10)
 
         extracted_text = convert_detections_to_text(
             prediction_result=pred,

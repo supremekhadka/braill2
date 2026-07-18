@@ -152,6 +152,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable stratified splitting (treat all sources as one pool).",
     )
 
+    p.add_argument(
+        "--multiscale-synthetic",
+        action="store_true",
+        help="Generate synthetic samples with scale spread uniformly across "
+             "[--scale-min, --scale-max] instead of the class's default "
+             "probabilistic small/large scale split. Implies --no-crop and "
+             "outputs to a 'multiscale' folder instead of 'split'.",
+    )
+
+    p.add_argument(
+        "--scale-min",
+        type=float,
+        default=3.5,
+        help="Minimum scale for --multiscale-synthetic (default: 3.5).",
+    )
+
+    p.add_argument(
+        "--scale-max",
+        type=float,
+        default=15.0,
+        help="Maximum scale for --multiscale-synthetic (default: 15.0).",
+    )
+
     return p
 
 
@@ -198,13 +221,24 @@ def _run_sources(args: argparse.Namespace) -> None:
         _run_synthetic(args)
 
 def _run_synthetic(args: argparse.Namespace) -> None:
-    synthetic.build(
-        output_root=args.unified_path,
-        num_samples=args.num_synthetic,
-        prefix=args.synthetic_prefix,
-        seed=args.seed,
-        background_dir=args.synthetic_background_dir
-    )
+    if args.multiscale_synthetic:
+        synthetic.build_multiscale(
+            output_root=args.unified_path,
+            num_samples=args.num_synthetic,
+            prefix=args.synthetic_prefix,
+            scale_min=args.scale_min,
+            scale_max=args.scale_max,
+            seed=args.seed,
+            background_dir=args.synthetic_background_dir,
+        )
+    else:
+        synthetic.build(
+            output_root=args.unified_path,
+            num_samples=args.num_synthetic,
+            prefix=args.synthetic_prefix,
+            seed=args.seed,
+            background_dir=args.synthetic_background_dir,
+        )
 
 def _run_split(args: argparse.Namespace) -> None:
     source_prefixes = {
@@ -256,6 +290,11 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if args.multiscale_synthetic:
+        args.no_crop = True
+        if args.split_path == "data/split":
+            args.split_path = "data/multiscale"
+
     print("\n[Stage 1] Running source adapters")
     _run_sources(args)
 
@@ -263,7 +302,8 @@ def main() -> None:
     _run_split(args)
 
     if args.no_crop:
-        print("\n[Stage 3] Cropping skipped (--no-crop).")
+        reason = "multiscale synthetic run" if args.multiscale_synthetic else "--no-crop"
+        print(f"\n[Stage 3] Cropping skipped ({reason}).")
         final_path = args.split_path
     else:
         print("\n[Stage 3] Cropping …")

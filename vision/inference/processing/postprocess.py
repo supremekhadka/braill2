@@ -46,7 +46,7 @@ def apply_global_nms(prediction_result, iou_threshold: float = 0.1) -> tuple:
 
 #     return prediction_result, n_removed
 
-def mad_filter_area_outliers(prediction_result, threshold: float = 3.5) -> tuple:
+# def mad_filter_area_outliers(prediction_result, threshold: float = 3.5) -> tuple:
     """
     Remove detections whose box width or height is an outlier relative to
     the median width/height, using Median Absolute Deviation (MAD).

@@ -17,32 +17,37 @@ class BrailleGenerator:
         scale: float | None = None,
         small_scale_ratio: float = 0.35,
         bbox_pad_mm: float = 0.25,
-        # Example: point this at a folder of real page-background images
-        # (scans/photos) so perspective-warped page edges are filled with
-        # realistic backing instead of black:
-        # background_dir="/data/backgrounds",
         background_dir: str | None = None,
         seed: int | None = None,
+        supersample: int = 1,   # render at N x target res, then downsample
     ) -> None:
-        # Seeds both random sources used throughout generation, making a
-        # whole dataset reproducible (same seed -> same images + labels).
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
 
-        self.img_size = img_size
-        self.scale = scale
+        self.output_size = img_size                     # final delivered resolution
+        self.supersample = max(1, supersample)
+        self.img_size = (                                # working/render resolution
+            img_size[0] * self.supersample,
+            img_size[1] * self.supersample,
+        )
+
         if scale is None:
             if random.random() < small_scale_ratio:
-                self.scale = random.uniform(3.2, 4.0)   # ~15 px cell width
+                self.scale = random.uniform(3.2, 4.0)
             else:
-                self.scale = random.uniform(4.5, 5.5)   # ~22–30 px cell width
+                self.scale = random.uniform(4.5, 5.5)
         else:
             self.scale = scale
+
+        # scale is "working pixels per mm-unit"; multiplying by supersample
+        # here makes every downstream pixel quantity render at full
+        # supersampled resolution automatically.
+        self.scale *= self.supersample
+
         self.bbox_pad = bbox_pad_mm * self.scale
         self.background_dir = background_dir
 
-        # Standard Marburg Medium dimensions (mm to pixels)
         self.dot_rad   = (1.5 / 2) * self.scale
         self.px_h_dot  = 2.5 * self.scale
         self.px_v_dot  = 2.5 * self.scale
@@ -68,12 +73,10 @@ class BrailleGenerator:
         """Randomly wear, smear, or tear a single dot's kernel."""
         h, w = bump.shape
         if mode == "worn":
-            # uniform height loss — dot pressed flatter over time
             return bump * random.uniform(0.5, 0.8)
 
         if mode == "smear":
-            # directional motion blur simulating rubbed/dragged ink
-            length = random.randint(2, max(2, int(w * 0.3)))
+            length = random.randint(2, max(2, int(w * 0.2)))
             angle = random.uniform(0, 360)
             kernel = np.zeros((length, length), dtype=np.float32)
             kernel[length // 2, :] = 1.0
@@ -83,7 +86,6 @@ class BrailleGenerator:
             return cv2.filter2D(bump, -1, kernel)
 
         if mode == "torn":
-            # smooth random blob mask carves away part of the dot
             low = np.random.normal(0, 1, (10, 10)).astype(np.float32)
             blob = cv2.resize(low, (w, h), interpolation=cv2.INTER_CUBIC)
             blob = cv2.GaussianBlur(blob, (0, 0), sigmaX=w * 0.15)
@@ -111,13 +113,14 @@ class BrailleGenerator:
     def create_embossed_bump(
         self,
         radius: float,
-        top_ratio: float = 0.4,       # smaller flat area, more shoulder
-        falloff_power: float = 0.6,   # lower = gentler, more rounded falloff
-        height_scale: float = 0.35,
-        upsample: int = 100,
+        top_ratio: float = 0.6,
+        falloff_power: float = 0.75,
+        height_scale: float = 0.45,
+        upsample: int = 2,
     ) -> np.ndarray:
         radius = radius - 0.4
         falloff_power = falloff_power + random.uniform(-0.1, 0.1)
+        edge_roughness = random.uniform(0.05, 0.2)
         size = int(radius * 4)
         if size % 2 == 0:
             size += 1
@@ -130,13 +133,43 @@ class BrailleGenerator:
 
         yy, xx = np.mgrid[0:hi, 0:hi].astype(np.float32)
         d = np.sqrt((yy - center) ** 2 + (xx - center) ** 2)
+        theta = np.arctan2(yy - center, xx - center)
+
+        # Perturb the radius as a function of angle using multi-octave
+        # circular (value) noise rather than a few clean sine harmonics.
+        # A handful of low-k cosines always looks "flowery" (regular,
+        # periodic lobes); summing several octaves of randomly sampled,
+        # linearly-interpolated noise around the circle gives an
+        # irregular, torn-paper-like edge instead — each octave adds
+        # detail at its own angular frequency with an independent random
+        # phase, so nothing lines up into a repeating pattern.
+        theta_norm = (theta + np.pi) / (2 * np.pi)  # wrap to [0, 1)
+
+        n_octaves = random.randint(3, 5)
+        base_points = random.randint(4, 8)  # control points for octave 0
+        wobble = np.zeros_like(theta)
+        amp_total = 0.0
+        for o in range(n_octaves):
+            n_pts = max(3, int(base_points * (2 ** o)))
+
+            ctrl = np.random.uniform(-1, 1, n_pts + 1)
+            ctrl[-1] = ctrl[0]
+            xs = np.linspace(0.0, 1.0, n_pts + 1)
+            octave_noise = np.interp(theta_norm, xs, ctrl)
+            amp = 1.0 / (o + 1) ** 1.1  # higher octaves add fine detail, weighted down but not negligible
+            wobble += octave_noise * amp
+            amp_total += amp
+        wobble /= amp_total
+        radius_scale = 1.0 + wobble * edge_roughness
+
+        d_eff = d / radius_scale
 
         kernel_hi = np.zeros((hi, hi), dtype=np.float32)
-        kernel_hi[d <= top_radius_hi] = 1.0
+        kernel_hi[d_eff <= top_radius_hi] = 1.0
 
-        edge_mask = (d > top_radius_hi) & (d < radius_hi)
+        edge_mask = (d_eff > top_radius_hi) & (d_eff < radius_hi)
         span = max(radius_hi - top_radius_hi, 1e-6)
-        t = np.clip((d - top_radius_hi) / span, 0.0, 1.0)
+        t = np.clip((d_eff - top_radius_hi) / span, 0.0, 1.0)
         kernel_hi[edge_mask] = np.cos(t[edge_mask] * (np.pi / 2)) ** falloff_power
 
         kernel = cv2.resize(kernel_hi, (size, size), interpolation=cv2.INTER_AREA)
@@ -154,7 +187,7 @@ class BrailleGenerator:
     def generate_paper_texture(self) -> np.ndarray:
         """Return a float32 2-D array simulating paper grain and cloud noise."""
         texture = np.full(self.img_size, 1.01, dtype=np.float32)
-        grain = np.random.normal(0, 0.0275, self.img_size)
+        grain = np.random.normal(0.0025, 0.0275, self.img_size)
         small_noise = np.random.normal(
             0, 0.08, (self.img_size[0] // 20, self.img_size[1] // 20)
         )
@@ -170,11 +203,11 @@ class BrailleGenerator:
         temp = random.uniform(-1.1, 1.0)
         brightness = random.uniform(0.85, 1.0)
 
-        if temp > 0:  # warm: attenuate blue and green slightly
+        if temp > 0:
             b_mult = 1.0 - (temp * 0.45)
             g_mult = 1.0 - (temp * 0.20)
             r_mult = 1.0
-        else:          # cool: attenuate red and green slightly
+        else:
             b_mult = 1.0
             g_mult = 1.0 - (abs(temp) * 0.05)
             r_mult = 1.0 - (abs(temp) * 0.20)
@@ -275,8 +308,8 @@ class BrailleGenerator:
 
         M = cv2.getPerspectiveTransform(src_pts, dst_pts)
 
-        # Warp with a transparent (zero) border — exposed corners get filled
-        # in below with a real background image (or black), not smeared page.
+        # Warp with a transparent border, then fill exposed corners with a
+        # real background image (or black) instead of smeared page.
         warped = cv2.warpPerspective(
             img, M, (w, h),
             flags=cv2.INTER_LINEAR,
@@ -290,7 +323,7 @@ class BrailleGenerator:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0,
         )
-        mask = np.clip(mask, 0.0, 1.0)[..., None]  # (h, w, 1) for broadcasting
+        mask = np.clip(mask, 0.0, 1.0)[..., None]
 
         background = self.load_random_background(w, h)
         warped = warped * mask + background * (1.0 - mask)
@@ -337,8 +370,8 @@ class BrailleGenerator:
 
         gradient = xv * ux + yv * uy
 
-        # Normalize by the true achievable peak for this azimuth
-        # (|ux| + |uy|), so gradient strength is consistent across azimuths.
+        # Normalize by the true achievable peak for this azimuth so gradient
+        # strength is consistent across azimuths.
         norm = max(abs(ux) + abs(uy), 1e-6)
         gradient = gradient / norm
 
@@ -348,7 +381,7 @@ class BrailleGenerator:
         self,
         allowed_chars: list[int] | None = None,
         margin_mm: float = 20.0,
-        space_prob: float = 0.35,
+        space_prob: float = 0.15,
         apply_skew: bool = True,
     ) -> tuple[np.ndarray, list[str]]:
         if allowed_chars is None:
@@ -357,13 +390,16 @@ class BrailleGenerator:
         recto_h = np.zeros(self.img_size, dtype=np.float32)
         verso_h = np.zeros(self.img_size, dtype=np.float32)
 
-        bump = self.create_embossed_bump(self.dot_rad)
-        bh, bw = bump.shape
+        # Template bumps purely to fix kernel size/offset for array indexing;
+        # the actual base shape used for stamping is regenerated per cell
+        # below so every dot gets its own random edge roughness.
+        _bump_template = self.create_embossed_bump(self.dot_rad)
+        bh, bw = _bump_template.shape
         offset = bh // 2
 
-        verso_dot_scale = 0.85  # verso (back-side) dots render smaller than recto
-        verso_bump = self.create_embossed_bump(self.dot_rad * verso_dot_scale)
-        verso_bh, verso_bw = verso_bump.shape
+        verso_dot_scale = random.uniform(0.75, 0.9)  # verso (back-side) dots render smaller than recto
+        _verso_bump_template = self.create_embossed_bump(self.dot_rad * verso_dot_scale)
+        verso_bh, verso_bw = _verso_bump_template.shape
         verso_offset = verso_bh // 2
 
         margin = int(margin_mm * self.scale)
@@ -372,6 +408,16 @@ class BrailleGenerator:
 
         # Raw bboxes in absolute pixel coords before perspective warp
         raw_bboxes: list[tuple[int, float, float, float, float]] = []
+
+        # Randomize how much degradation this page gets: each page draws
+        # its own smear/worn/torn/pristine proportions, so some pages come
+        # out mostly pristine and others heavily degraded.
+        recto_smear_p = random.uniform(0.1, 0.6)
+        recto_worn_p = min(recto_smear_p + random.uniform(0.1, 0.4), 1.0)
+
+        verso_torn_p = random.uniform(0.0, 0.15)
+        verso_smear_p = min(verso_torn_p + random.uniform(0.1, 0.4), 1.0)
+        verso_worn_p = min(verso_smear_p + random.uniform(0.1, 0.4), 1.0)
 
         for r in range(rows):
             for c in range(cols):
@@ -389,6 +435,19 @@ class BrailleGenerator:
                     y2 = py + 2 * self.px_v_dot + self.dot_rad + self.bbox_pad
                     raw_bboxes.append((char_id, x1, y1, x2, y2))
 
+                    # Fresh base bump per cell so each character's dots get
+                    # their own random edge roughness, then one shared
+                    # degradation kernel on top so the cell wears as a unit.
+                    top_ratio = random.uniform(0.1, 0.45) if self.scale >= 10 else random.uniform(0.5, 0.7)
+                    bump = self.create_embossed_bump(self.dot_rad, top_ratio=top_ratio, falloff_power=random.uniform(0.6, 0.8))
+                    cell_roll = random.random()
+                    if cell_roll < recto_smear_p:
+                        cell_bump = self.degrade_bump(bump, "smear")
+                    elif cell_roll < recto_worn_p:
+                        cell_bump = self.degrade_bump(bump, "worn")
+                    else:
+                        cell_bump = bump
+
                     for i, bit in enumerate(bit_str):
                         if bit == "1":
                             jx = random.uniform(-0.02, 0.02) * self.scale if random.random() < 0.5 else 0.0
@@ -397,12 +456,7 @@ class BrailleGenerator:
                             dy = (i % 3) * self.px_v_dot + jy
                             y_c, x_c = int(py + dy), int(px + dx)
 
-                            dot_bump = bump
-                            roll = random.random()
-                            if roll < 0.5:
-                                dot_bump = self.degrade_bump(bump, "smear")
-                            elif roll < 0.8:
-                                dot_bump = self.degrade_bump(bump, "worn")
+                            dot_bump = cell_bump
 
                             y1_b = y_c - offset; y2_b = y_c + offset + 1
                             x1_b = x_c - offset; x2_b = x_c + offset + 1
@@ -413,11 +467,23 @@ class BrailleGenerator:
                                 )
 
                 # Verso
-                if not random.uniform(0, 1) > space_prob:
+                if random.random() > space_prob:
                     v_char_id = int(np.random.choice(allowed_chars))
                     v_bit_str = self.id_to_bits(v_char_id)
                     vx = px + self.px_h_dot / 2
                     vy = py + self.px_v_dot / 2
+
+                    verso_top_ratio = random.uniform(0.1, 0.45) if self.scale >= 10 else random.uniform(0.5, 0.7)
+                    verso_bump = self.create_embossed_bump(self.dot_rad * verso_dot_scale, top_ratio=verso_top_ratio, falloff_power=random.uniform(0.6, 0.8))
+                    verso_cell_roll = random.random()
+                    if verso_cell_roll < verso_torn_p:
+                        verso_cell_bump = self.degrade_bump(verso_bump, "torn")
+                    elif verso_cell_roll < verso_smear_p:
+                        verso_cell_bump = self.degrade_bump(verso_bump, "smear")
+                    elif verso_cell_roll < verso_worn_p:
+                        verso_cell_bump = self.degrade_bump(verso_bump, "worn")
+                    else:
+                        verso_cell_bump = verso_bump
 
                     for i, bit in enumerate(v_bit_str):
                         if bit == "1":
@@ -427,14 +493,7 @@ class BrailleGenerator:
                             dy = (i % 3) * self.px_v_dot + jy
                             y_c, x_c = int(vy + dy), int(vx + dx)
 
-                            dot_bump = verso_bump
-                            roll = random.random()
-                            if roll < 0.05:
-                                dot_bump = self.degrade_bump(verso_bump, "torn")
-                            elif roll < 0.30:
-                                dot_bump = self.degrade_bump(verso_bump, "smear")
-                            elif roll < 0.60:
-                                dot_bump = self.degrade_bump(verso_bump, "worn")
+                            dot_bump = verso_cell_bump
 
                             y1_b = y_c - verso_offset; y2_b = y_c + verso_offset + 1
                             x1_b = x_c - verso_offset; x2_b = x_c + verso_offset + 1
@@ -453,9 +512,8 @@ class BrailleGenerator:
         blur_px = 1
         total_h = cv2.GaussianBlur(total_h, (blur_px, blur_px), 0)
 
-        # Randomised lighting parameters
-        light_azimuth   = random.uniform(205, 335)   # degrees
-        light_elevation = random.uniform(10, 45)      # degrees
+        light_azimuth   = random.uniform(205, 335)
+        light_elevation = random.uniform(0, 45)
         light_intensity = random.uniform(0.25, 0.55)
 
         shading = self.calculate_lighting(
@@ -464,13 +522,6 @@ class BrailleGenerator:
             elevation_deg=light_elevation,
             intensity=light_intensity,
         )
-
-        # Verso dots should catch less light/highlight than recto dots
-        # (they're indentations on the back, seen from the front, so they
-        # shouldn't shine as brightly as embossed recto bumps). Attenuate
-        # the shading layer wherever verso height is present.
-        # verso_mask = np.clip(verso_h / (verso_h.max() + 1e-6), 0.0, 1.0)
-        # shading *= (1.0 - verso_mask * 0.6)
 
         # Trailing shadow cast by recto dots opposite to the light source
         shadow_dist = 0.9 * self.scale
@@ -499,7 +550,6 @@ class BrailleGenerator:
         final = self.generate_paper_texture() + shading + light_gradient - (verso_h * verso_darkness_factor)
         final = self.apply_vignette(final, strength=0.25)
 
-        # Expand grayscale height map to 3-channel BGR for colour tinting
         final_bgr = np.stack([final, final, final], axis=-1)
         final_bgr = self.apply_color_tint(final_bgr)
 
@@ -538,6 +588,16 @@ class BrailleGenerator:
             )
 
         final_uint8 = (np.clip(final_bgr, 0, 1) * 255).astype(np.uint8)
+
+        if self.supersample > 1:
+            # Area-based downsample gives the embossed dots a smooth,
+            # physically pressed look instead of jagged/aliased edges.
+            final_uint8 = cv2.resize(
+                final_uint8,
+                (self.output_size[1], self.output_size[0]),
+                interpolation=cv2.INTER_AREA,
+            )
+
         return final_uint8, yolo_annotations
 
 
@@ -608,4 +668,81 @@ def build(
             print(f"[synthetic] {i + 1}/{num_samples} samples generated")
 
     print(f"[synthetic] Done: {output_root}")
+    return samples
+
+
+def build_multiscale(
+    output_root: str,
+    num_samples: int = 100,
+    prefix: str = "SYN",
+    scale_min: float = 3.5,
+    scale_max: float = 15.0,
+    seed: int | None = None,
+    background_dir: str | None = None,
+    **generator_kwargs,
+) -> list[Sample]:
+    """
+    Like build(), but instead of each page drawing its scale from the
+    class's built-in small/large probabilistic split (small_scale_ratio),
+    scales are spread uniformly across [scale_min, scale_max] via
+    np.linspace so every sample count gets even coverage of the range —
+    no clumping and no gaps at the ends, which is what you'd get from
+    np.random.uniform for small num_samples. The linspace array is then
+    shuffled once so scale doesn't correlate with output file order.
+
+    Seed is applied once up front (rather than per-BrailleGenerator
+    instance) so the whole run consumes one continuous RNG stream and
+    stays reproducible end-to-end; each per-sample BrailleGenerator below
+    is constructed with seed=None so it doesn't reset that stream.
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    scales = np.linspace(scale_min, scale_max, num_samples)
+    np.random.shuffle(scales)
+
+    generator_kwargs.pop("scale", None)  # explicit per-sample scale below always wins
+
+    images_out = os.path.join(output_root, "images")
+    labels_out = os.path.join(output_root, "labels")
+    os.makedirs(images_out, exist_ok=True)
+    os.makedirs(labels_out, exist_ok=True)
+
+    samples: list[Sample] = []
+    pad = len(str(num_samples))
+    milestone = max(1, num_samples // 10)
+
+    for i, scale in enumerate(scales):
+        generator = BrailleGenerator(
+            scale=float(scale),
+            background_dir=background_dir,
+            seed=None,
+            **generator_kwargs,
+        )
+        img_bgr, annotation_strings = generator.generate_page()
+
+        base_name = f"{prefix}_{i:0{pad}d}"
+        dst_img = os.path.join(images_out, f"{base_name}.jpg")
+        dst_lbl = os.path.join(labels_out, f"{base_name}.txt")
+
+        cv2.imwrite(dst_img, img_bgr)
+
+        boxes = _parse_yolo_strings(annotation_strings)
+        write_label_file(boxes, dst_lbl)
+
+        samples.append(
+            Sample(
+                image_path=dst_img,
+                label_path=dst_lbl,
+                source="synthetic",
+                annotations=boxes,
+            )
+        )
+
+        if (i + 1) % milestone == 0 or (i + 1) == num_samples:
+            print(f"[synthetic] {i + 1}/{num_samples} samples generated "
+                  f"(scale={scale:.2f})")
+
+    print(f"[synthetic] Done (multiscale {scale_min}-{scale_max}): {output_root}")
     return samples
