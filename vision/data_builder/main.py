@@ -113,6 +113,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p.add_argument(
+        "--synthetic-background-dir",
+        type=str,
+        default=None,
+        help="Directory containing background images for synthetic page generation.",
+    )
+
+    p.add_argument(
         "--no-crop",
         action="store_true",
         help="Skip the cropping stage and use split output as final dataset.",
@@ -196,6 +203,7 @@ def _run_synthetic(args: argparse.Namespace) -> None:
         num_samples=args.num_synthetic,
         prefix=args.synthetic_prefix,
         seed=args.seed,
+        background_dir=args.synthetic_background_dir
     )
 
 def _run_split(args: argparse.Namespace) -> None:

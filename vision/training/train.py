@@ -1,4 +1,5 @@
 import argparse
+import datetime
 from pathlib import Path
 
 from ultralytics import YOLO
@@ -54,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--project",
         type=str,
-        default=str(Path.cwd() / "runs"),
+        default=str(Path.cwd() / "runs" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")),
     )
     return parser
 

@@ -469,8 +469,8 @@ class BrailleGenerator:
         # (they're indentations on the back, seen from the front, so they
         # shouldn't shine as brightly as embossed recto bumps). Attenuate
         # the shading layer wherever verso height is present.
-        verso_mask = np.clip(verso_h / (verso_h.max() + 1e-6), 0.0, 1.0)
-        shading *= (1.0 - verso_mask * 0.6)
+        # verso_mask = np.clip(verso_h / (verso_h.max() + 1e-6), 0.0, 1.0)
+        # shading *= (1.0 - verso_mask * 0.6)
 
         # Trailing shadow cast by recto dots opposite to the light source
         shadow_dist = 0.9 * self.scale
@@ -495,7 +495,7 @@ class BrailleGenerator:
 
         light_gradient = self.generate_light_gradient(light_azimuth, strength=random.uniform(0.15, 0.25))
 
-        verso_darkness_factor = 0.15
+        verso_darkness_factor = random.uniform(0.15, 0.35)
         final = self.generate_paper_texture() + shading + light_gradient - (verso_h * verso_darkness_factor)
         final = self.apply_vignette(final, strength=0.25)
 
@@ -565,13 +565,14 @@ def build(
     prefix: str = "SYN",
     generator: BrailleGenerator | None = None,
     seed: int | None = None,
+    background_dir: str | None = None,
     **generator_kwargs,
 ) -> list[Sample]:
     if generator is None:
         # seed here (rather than relying on caller-set global RNG state) is
         # what makes build() reproducible end-to-end: same seed + same
         # num_samples -> same images + same annotations.
-        generator = BrailleGenerator(seed=seed, **generator_kwargs)
+        generator = BrailleGenerator(seed=seed, background_dir=background_dir, **generator_kwargs)
 
     images_out = os.path.join(output_root, "images")
     labels_out = os.path.join(output_root, "labels")
