@@ -1,7 +1,9 @@
 data/*
 !data/background/
 runs
-weights
+weights/
+!weights/deployment
+!weights/deployment/**
 __pycache__/
 venv
 *.pt

@@ -1,8 +1,12 @@
 import argparse
-import datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
+from dotenv import parser
 from ultralytics import YOLO
+
+local_time = datetime.now(ZoneInfo("Asia/Kathmandu"))
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -55,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--project",
         type=str,
-        default=str(Path.cwd() / "runs" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")),
+        default=str(Path.cwd() / "runs" / "yolo26n" / local_time.strftime("%Y-%m-%d_%H-%M-%S")),
     )
     return parser
 
