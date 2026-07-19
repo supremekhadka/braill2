@@ -1,2 +1,8 @@
 weights/deployment/*.pt filter=lfs diff=lfs merge=lfs -text
 weights/deployment/**/*.pt filter=lfs diff=lfs merge=lfs -text
+weights/deployment/**/*.tflite filter=lfs diff=lfs merge=lfs -text
+weights/deployment/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+mobile-app/assets/models/best_finetuned_mAP_95_9_float16.tflite filter=lfs diff=lfs merge=lfs -text
+mobile-app/assets/models/best_finetuned_mAP_96_1_float16.tflite filter=lfs diff=lfs merge=lfs -text
+mobile-app/assets/models/best_float16.tflite filter=lfs diff=lfs merge=lfs -text
+mobile-app/assets/models/best_float32.tflite filter=lfs diff=lfs merge=lfs -text
