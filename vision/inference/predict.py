@@ -5,7 +5,7 @@ from .utils.file_utils import write_text, write_image
 from .utils.visualization import render_from_json
 
 INFERENCE_CONFIG = {
-    "model": "weights/deployment/best_finetuned_mAP_96_1.pt",
+    "model": "weights/deployment/yolo26n/finetuned/best_finetuned_mAP_96_1.pt",
     "image": "path/to/image",
     "out_text": "data/output/text.txt",
     "out_img": "data/output/vis.jpg",

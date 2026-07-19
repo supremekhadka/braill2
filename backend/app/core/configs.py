@@ -6,7 +6,7 @@ class InferenceConfig:
     NEPALI_LABEL_MAP = "configs/nepali_braille.yaml"
     BATCH_SIZE = 10
     BASE_CONFIG = {
-        "model": "weights/deployment/best_finetuned_mAP_96_1.pt",
+        "model": "weights/deployment/yolo26n/finetuned/best_finetuned_mAP_96_1.pt",
         "slice_size": 640,
         "overlap": 0.1,
         "confidence": 0.4,
