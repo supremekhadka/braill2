@@ -12,11 +12,11 @@ class SahiInference {
   static const int numTilesY = 3;
 
   /// Fractional overlap between adjacent tiles (SAHI default: 0.2).
-  static const double overlapHeightRatio = 0.2;
-  static const double overlapWidthRatio = 0.2;
+  static const double overlapHeightRatio = 0.15;
+  static const double overlapWidthRatio = 0.15;
 
   /// IoU threshold used by the NMS postprocessor (SAHI default: 0.5).
-  static const double nmsIouThreshold = 0.5;
+  static const double nmsIouThreshold = 0.35;
 
   final TfliteService _service;
 

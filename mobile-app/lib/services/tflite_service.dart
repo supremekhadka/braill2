@@ -23,7 +23,7 @@ enum InferenceBackend { gpu, nnapi, cpu }
 
 class TfliteService {
   static const int inputSize = 640;
-  static const double confidenceThreshold = 0.4;
+  static const double confidenceThreshold = 0.35;
   static const int maxDetections = 300;
 
   Interpreter? _interpreter;
@@ -33,6 +33,8 @@ class TfliteService {
 
   Future<void> loadModel() async {
     const asset = 'assets/models/best_float32.tflite';
+    // const asset = 'assets/models/best_finetuned_mAP_96_1_float16.tflite';
+    // const asset = 'assets/models/best_finetuned_mAP_95_9_float16.tflite';
 
     try {
       final opts = InterpreterOptions()..addDelegate(GpuDelegate());
@@ -131,6 +133,24 @@ class TfliteService {
       input.reshape([1, inputSize, inputSize, 3]),
       outputBuffer,
     );
+
+      // ── TEMP DEBUG LOGGING ──────────────────────────────────────────────
+    final raw = outputBuffer[0];
+    for (int i = 0; i < maxDetections; i++) {
+      final det = raw[i];
+      if (det[4] > 0.4) { // low bar, catch near-miss confidences too
+        // ignore: avoid_print
+        print(
+          'RAW[$i] conf=${det[4].toStringAsFixed(3)} '
+          'classIdRaw=${det[5].toStringAsFixed(3)} '
+          'classIdRounded=${det[5].round()} '
+          'box=(${det[0].toStringAsFixed(3)},${det[1].toStringAsFixed(3)},'
+          '${det[2].toStringAsFixed(3)},${det[3].toStringAsFixed(3)})',
+        );
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────
+
     return _parseOutput(outputBuffer[0], image.width, image.height);
   }
 

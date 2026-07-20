@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:app/core/image_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:cunning_document_scanner_plus/cunning_document_scanner_plus.dart';
@@ -96,10 +97,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
       return;
     }
 
+    final clamped = clampToFhd(decoded);
     setState(() => _step = _Step.inference);
     List<Detection> detections;
     try {
-      detections = await _sahi.runSahi(decoded);
+      detections = await _sahi.runSahi(clamped);
     } catch (e) {
       setState(() {
         _isLoading = false;

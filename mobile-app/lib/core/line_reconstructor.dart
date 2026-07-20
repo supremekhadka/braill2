@@ -70,17 +70,39 @@ class LineReconstructor {
     }).toList();
   }
 
+  // static List<BrailleCell> _filterOutliers(List<BrailleCell> cells) {
+  //   if (cells.length < 4) return cells;
+  //   final areas = (cells.map((c) => c.width * c.height).toList())..sort();
+  //   final q1 = _percentile(areas, 0.25);
+  //   final q3 = _percentile(areas, 0.75);
+  //   final iqr = q3 - q1;
+  //   final lo = q1 - 1.5 * iqr;
+  //   final hi = q3 + 1.5 * iqr;
+  //   return cells.where((c) {
+  //     final a = c.width * c.height;
+  //     return a >= lo && a <= hi;
+  //   }).toList();
+  // }
+
+  static const double _madThreshold = 10.0;
+
   static List<BrailleCell> _filterOutliers(List<BrailleCell> cells) {
     if (cells.length < 4) return cells;
-    final areas = (cells.map((c) => c.width * c.height).toList())..sort();
-    final q1 = _percentile(areas, 0.25);
-    final q3 = _percentile(areas, 0.75);
-    final iqr = q3 - q1;
-    final lo = q1 - 1.5 * iqr;
-    final hi = q3 + 1.5 * iqr;
+
+    final areas = cells.map((c) => c.width * c.height).toList();
+    final median = _median(areas);
+    final absDeviations = areas.map((a) => (a - median).abs()).toList();
+    final mad = _median(absDeviations);
+
+    if (mad == 0) {
+      // No spread — nothing meaningfully deviates, keep everything
+      return cells;
+    }
+
     return cells.where((c) {
       final a = c.width * c.height;
-      return a >= lo && a <= hi;
+      final modifiedZ = 0.6745 * (a - median) / mad;
+      return modifiedZ.abs() <= _madThreshold;
     }).toList();
   }
 

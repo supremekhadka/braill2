@@ -15,6 +15,28 @@ import '../services/tflite_service.dart' show Detection;
 import 'batch_result_screen.dart';
 import 'result_screen.dart';
 import 'login_screen.dart';
+import '../core/image_utils.dart';
+import 'package:image/image.dart' as img;
+
+Future<File> _clampedFileFor(String path) async {
+  try {
+    final original = File(path);
+    final bytes = await original.readAsBytes();
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return original;
+
+    final clamped = clampToFhd(decoded);
+    if (identical(clamped, decoded)) return original; // no-op, already small
+
+    final encoded = img.encodeJpg(clamped, quality: 90);
+    final outPath = '${original.path}_fhd.jpg';
+    final outFile = File(outPath);
+    await outFile.writeAsBytes(encoded);
+    return outFile;
+  } catch (_) {
+    return File(path); // fail open
+  }
+}
 
 /// Max images accepted per batch inference request. Keep this in sync with
 /// BATCH_SIZE in backend/app/core/configs.py.
@@ -91,7 +113,7 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
   }
 
   Future<void> _runSingle(String scannedPath) async {
-    final imageFile = File(scannedPath);
+    final imageFile = await _clampedFileFor(scannedPath);
 
     setState(() => _step = _Step.uploading);
     ImageResponse uploaded;
@@ -173,7 +195,7 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
         );
       }
     }
-    final imageFiles = paths.map(File.new).toList();
+    final imageFiles = await Future.wait(paths.map(_clampedFileFor));
 
     setState(() => _step = _Step.uploading);
     final uploaded = <ImageResponse>[];

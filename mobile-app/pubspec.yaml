@@ -72,6 +72,8 @@ flutter:
   assets:
     - assets/models/best_float32.tflite
     - assets/models/best_float16.tflite
+    - assets/models/best_finetuned_mAP_95_9_float16.tflite
+    - assets/models/best_finetuned_mAP_96_1_float16.tflite
 
   # To add assets to your application, add an assets section, like this:
   # assets:
