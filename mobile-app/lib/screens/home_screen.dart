@@ -174,9 +174,9 @@ class _BrandHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(
-      'Braille.',
+      'Braill.',
       style: context.text.displayLarge,
-      semanticsLabel: 'Braille.',
+      semanticsLabel: 'Braill.',
     );
   }
 }

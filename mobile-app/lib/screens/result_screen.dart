@@ -203,6 +203,37 @@ class _ResultScreenState extends State<ResultScreen>
 
   // ── read aloud ──────────────────────────────────────────────────────────
 
+  /// TTS engines generally treat any `\n` as a pause/sentence boundary, which
+  /// made every wrapped braille line sound like a new sentence. This keeps
+  /// real paragraph breaks (two or more consecutive newlines) as pauses but
+  /// turns single line breaks into a plain space so the line is read
+  /// serially. The swap is 1-for-1 (one char in, one char out) so the
+  /// character offsets `setProgressHandler` reports still line up with the
+  /// original `text` used for the on-screen highlight in `_TextTab`.
+  String _prepareSpeechText(String text) {
+    final buffer = StringBuffer();
+    int i = 0;
+    while (i < text.length) {
+      if (text[i] == '\n') {
+        var j = i;
+        while (j < text.length && text[j] == '\n') {
+          j++;
+        }
+        final runLength = j - i;
+        if (runLength == 1) {
+          buffer.write(' ');
+        } else {
+          buffer.write('\n' * runLength);
+        }
+        i = j;
+      } else {
+        buffer.write(text[i]);
+        i++;
+      }
+    }
+    return buffer.toString();
+  }
+
   Future<void> _toggleReadAloud(String text) async {
     if (_speaking) {
       await _tts.stop();
@@ -211,7 +242,7 @@ class _ResultScreenState extends State<ResultScreen>
     if (text.trim().isEmpty) return;
     await _tts.setLanguage(_language == BrailleLanguage.english ? 'en-US' : 'ne-NP');
     await _tts.setPitch(1.0);
-    await _tts.speak(text);
+    await _tts.speak(_prepareSpeechText(text));
   }
 
   // ── re-run inference ────────────────────────────────────────────────────

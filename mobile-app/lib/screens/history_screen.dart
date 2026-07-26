@@ -10,6 +10,72 @@ import '../core/braille_mappings.dart';
 import '../core/line_reconstructor.dart';
 import '../services/tflite_service.dart' show Detection;
 
+/// Simple in-memory LRU-ish cache for downloaded online-history thumbnails,
+/// keyed by imageId. Keeps the History screen from re-downloading the same
+/// image every time a card scrolls into view or the screen rebuilds.
+class _OnlineImageCache {
+  _OnlineImageCache._();
+  static final _OnlineImageCache instance = _OnlineImageCache._();
+
+  static const int _maxEntries = 60;
+  final _cache = <String, Future<File>>{};
+
+  Future<File> get(
+    String imageId,
+    Future<File> Function() download,
+  ) {
+    final cached = _cache[imageId];
+    if (cached != null) {
+      // Re-insert to mark as most-recently-used.
+      _cache.remove(imageId);
+      _cache[imageId] = cached;
+      return cached;
+    }
+    final future = download();
+    _cache[imageId] = future;
+    // Drop the request from the cache if it fails, so a transient network
+    // error doesn't get "stuck" and permanently block retries.
+    future.catchError((Object error) {
+      _cache.remove(imageId);
+      // Rethrow so callers (FutureBuilder) still see the error.
+      throw error;
+    });
+    if (_cache.length > _maxEntries) {
+      _cache.remove(_cache.keys.first);
+    }
+    return future;
+  }
+
+  void invalidate(String imageId) => _cache.remove(imageId);
+}
+
+String formatHistoryDate(DateTime dt) {
+  final now = DateTime.now();
+  final diff = now.difference(dt);
+  if (diff.inDays == 0) return 'Today ${_hhmm(dt)}';
+  if (diff.inDays == 1) return 'Yesterday ${_hhmm(dt)}';
+  return '${dt.day} ${_month(dt.month)} ${_hhmm(dt)}';
+}
+
+String _hhmm(DateTime dt) =>
+    '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+
+String _month(int m) => const [
+  '',
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+][m];
+
 List<Detection> _annotationsToDetections(List<AnnotationItem> items) {
   return items
       .map(
@@ -274,6 +340,8 @@ class _HistoryScreenState extends State<HistoryScreen>
             entries: (_offlineEntries == null && _onlineEntries == null)
                 ? null
                 : _combined,
+            apiClient: widget.apiClient,
+            token: widget.authService.token,
             onOfflineTap: _openOfflineEntry,
             onOnlineTap: _openOnlineEntry,
             onOfflineDelete: _deleteOffline,
@@ -281,6 +349,7 @@ class _HistoryScreenState extends State<HistoryScreen>
           ),
           _OnlineTab(
             authService: widget.authService,
+            apiClient: widget.apiClient,
             entries: _onlineEntries,
             loading: _onlineLoading,
             error: _onlineError,
@@ -331,6 +400,8 @@ class _UnifiedEntry {
 
 class _AllTab extends StatelessWidget {
   final List<_UnifiedEntry>? entries;
+  final ApiClient apiClient;
+  final String? token;
   final void Function(BuildContext, HistoryEntry) onOfflineTap;
   final Future<void> Function(BuildContext, InferenceResponse) onOnlineTap;
   final void Function(String id) onOfflineDelete;
@@ -338,6 +409,8 @@ class _AllTab extends StatelessWidget {
 
   const _AllTab({
     required this.entries,
+    required this.apiClient,
+    required this.token,
     required this.onOfflineTap,
     required this.onOnlineTap,
     required this.onOfflineDelete,
@@ -371,8 +444,13 @@ class _AllTab extends StatelessWidget {
           );
         }
         final e = entry.onlineEntry!;
+        // `token` is non-null here: an online entry only ever ends up in
+        // `_combined` after a successful `_loadOnline()`, which itself
+        // requires `authService.isLoggedIn`.
         return _OnlineHistoryCardWrapper(
           entry: e,
+          apiClient: apiClient,
+          token: token!,
           onTap: () => onOnlineTap(context, e),
           onDelete: () => onOnlineDelete(e.id),
         );
@@ -428,6 +506,7 @@ class _OfflineTab extends StatelessWidget {
 
 class _OnlineTab extends StatelessWidget {
   final AuthService authService;
+  final ApiClient apiClient;
   final List<InferenceResponse>? entries;
   final bool loading;
   final String? error;
@@ -437,6 +516,7 @@ class _OnlineTab extends StatelessWidget {
 
   const _OnlineTab({
     required this.authService,
+    required this.apiClient,
     required this.entries,
     required this.loading,
     required this.error,
@@ -505,6 +585,8 @@ class _OnlineTab extends StatelessWidget {
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, i) => _OnlineHistoryCardWrapper(
         entry: entries![i],
+        apiClient: apiClient,
+        token: authService.token!,
         onTap: () => onTap(context, entries![i]),
         onDelete: () => onDelete(entries![i].id),
       ),
@@ -563,40 +645,13 @@ class _HistoryCard extends StatelessWidget {
     required this.onTap,
   });
 
-  String _formatDate(DateTime dt) {
-    final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inDays == 0) return 'Today ${_hhmm(dt)}';
-    if (diff.inDays == 1) return 'Yesterday ${_hhmm(dt)}';
-    return '${dt.day} ${_month(dt.month)} ${_hhmm(dt)}';
-  }
-
-  String _hhmm(DateTime dt) =>
-      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-
-  String _month(int m) => const [
-    '',
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ][m];
-
   @override
   Widget build(BuildContext context) {
     final hasImage = File(entry.imagePath).existsSync();
     return Semantics(
       button: true,
       label:
-          '${entry.mode} scan from ${_formatDate(entry.timestamp)}. '
+          '${entry.mode} scan from ${formatHistoryDate(entry.timestamp)}. '
           '${entry.detectionCount} cells detected.',
       child: GestureDetector(
         onTap: onTap,
@@ -641,7 +696,7 @@ class _HistoryCard extends StatelessWidget {
                           _ModeChip(mode: entry.mode),
                           const Spacer(),
                           Text(
-                            _formatDate(entry.timestamp),
+                            formatHistoryDate(entry.timestamp),
                             style: context.text.bodyMedium?.copyWith(
                               fontSize: 12,
                             ),
@@ -688,24 +743,67 @@ class _HistoryCard extends StatelessWidget {
 }
 
 /// Adapts an [InferenceResponse] card for use in both the Online tab and
-/// the combined All tab, resolving auth/apiClient from an InheritedWidget-
-/// free context via a small static lookup isn't available here, so callers
-/// pass fully-bound onTap/onDelete callbacks instead.
-class _OnlineHistoryCardWrapper extends StatelessWidget {
+/// the combined All tab. Lazily downloads and caches (via
+/// [_OnlineImageCache]) the thumbnail image, and shows the entry's real
+/// `created_at` timestamp.
+class _OnlineHistoryCardWrapper extends StatefulWidget {
   final InferenceResponse entry;
+  final ApiClient apiClient;
+  final String token;
   final VoidCallback onTap;
   final VoidCallback onDelete;
 
   const _OnlineHistoryCardWrapper({
     required this.entry,
+    required this.apiClient,
+    required this.token,
     required this.onTap,
     required this.onDelete,
   });
 
   @override
+  State<_OnlineHistoryCardWrapper> createState() =>
+      _OnlineHistoryCardWrapperState();
+}
+
+class _OnlineHistoryCardWrapperState
+    extends State<_OnlineHistoryCardWrapper> {
+  late Future<File> _imageFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _imageFuture = _loadImage();
+  }
+
+  @override
+  void didUpdateWidget(covariant _OnlineHistoryCardWrapper oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Only re-fetch if this card got re-bound to a different entry (e.g.
+    // list reordering reusing the element); the cache makes this cheap
+    // either way.
+    if (oldWidget.entry.imageId != widget.entry.imageId) {
+      setState(() => _imageFuture = _loadImage());
+    }
+  }
+
+  Future<File> _loadImage() {
+    return _OnlineImageCache.instance.get(
+      widget.entry.imageId,
+      () => widget.apiClient.downloadImage(widget.token, widget.entry.imageId),
+    );
+  }
+
+  Future<void> _retry() async {
+    _OnlineImageCache.instance.invalidate(widget.entry.imageId);
+    setState(() => _imageFuture = _loadImage());
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final entry = widget.entry;
     return GestureDetector(
-      onTap: onTap,
+      onTap: widget.onTap,
       child: Container(
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
@@ -719,15 +817,39 @@ class _OnlineHistoryCardWrapper extends StatelessWidget {
             const SizedBox(width: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(AppRadius.sm),
-              child: Container(
+              child: SizedBox(
                 width: 84,
                 height: 84,
-                color: context.bgSurfaceHigh,
-                alignment: Alignment.center,
-                child: Icon(
-                  Icons.cloud_outlined,
-                  size: 24,
-                  color: context.textDisabled,
+                child: FutureBuilder<File>(
+                  future: _imageFuture,
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState != ConnectionState.done) {
+                      return Container(
+                        color: context.bgSurfaceHigh,
+                        alignment: Alignment.center,
+                        child: const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      );
+                    }
+                    if (snapshot.hasError || !snapshot.hasData) {
+                      return GestureDetector(
+                        onTap: _retry,
+                        child: Container(
+                          color: context.bgSurfaceHigh,
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.cloud_outlined,
+                            size: 24,
+                            color: context.textDisabled,
+                          ),
+                        ),
+                      );
+                    }
+                    return Image.file(snapshot.data!, fit: BoxFit.cover);
+                  },
                 ),
               ),
             ),
@@ -743,8 +865,10 @@ class _OnlineHistoryCardWrapper extends StatelessWidget {
                         const _ModeChip(mode: 'Online'),
                         const Spacer(),
                         Text(
-                          '${entry.annotations.length} cells',
-                          style: context.text.bodyMedium?.copyWith(fontSize: 12),
+                          formatHistoryDate(entry.createdAt),
+                          style: context.text.bodyMedium?.copyWith(
+                            fontSize: 12,
+                          ),
                         ),
                       ],
                     ),
@@ -757,6 +881,11 @@ class _OnlineHistoryCardWrapper extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: context.text.bodyLarge?.copyWith(fontSize: 14),
                     ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${entry.annotations.length} cells',
+                      style: context.text.bodyMedium?.copyWith(fontSize: 12),
+                    ),
                   ],
                 ),
               ),
@@ -768,7 +897,7 @@ class _OnlineHistoryCardWrapper extends StatelessWidget {
                 color: context.textDisabled,
               ),
               tooltip: 'Remove',
-              onPressed: onDelete,
+              onPressed: widget.onDelete,
             ),
           ],
         ),

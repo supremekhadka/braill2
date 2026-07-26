@@ -8,7 +8,6 @@ class Detection {
   final double x1, y1, x2, y2;
   final double confidence;
   final int classId;
-
   const Detection({
     required this.x1,
     required this.y1,
@@ -23,25 +22,44 @@ enum InferenceBackend { gpu, nnapi, cpu }
 
 class TfliteService {
   static const int inputSize = 640;
-  static const double confidenceThreshold = 0.15;
   static const int maxDetections = 300;
+
+  /// Default confidence threshold, used if the caller doesn't supply one.
+  /// This mirrors `SettingsService.defaultConfThreshold` — kept in sync
+  /// manually since this file has no dependency on the settings layer.
+  static const double defaultConfidenceThreshold = 0.5;
+
+  /// Minimum confidence a raw detection needs to survive [_parseOutput].
+  /// Mutable (not `final`) so it can be updated at runtime from
+  /// `SettingsService.confThreshold` via [updateConfidenceThreshold]
+  /// without having to reload the model.
+  double confidenceThreshold;
 
   Interpreter? _interpreter;
   IsolateInterpreter? _isolateInterpreter;
   InferenceBackend _activeBackend = InferenceBackend.cpu;
+
   InferenceBackend get activeBackend => _activeBackend;
+
+  TfliteService({double confidenceThreshold = defaultConfidenceThreshold})
+    : confidenceThreshold = confidenceThreshold.clamp(0.0, 1.0);
+
+  /// Updates the confidence threshold used by subsequent [runInference]
+  /// calls. Clamped to `[0.0, 1.0]`. Cheap — just an instance field write,
+  /// safe to call every time `SettingsService.confThreshold` changes.
+  void updateConfidenceThreshold(double value) {
+    confidenceThreshold = value.clamp(0.0, 1.0);
+  }
 
   Future<void> loadModel() async {
     const asset = 'assets/models/best_float32.tflite';
     // const asset = 'assets/models/best_finetuned_mAP_96_1_float16.tflite';
     // const asset = 'assets/models/best_finetuned_mAP_95_9_float16.tflite';
-
     try {
       final opts = InterpreterOptions()..addDelegate(GpuDelegate());
       _interpreter = await Interpreter.fromAsset(asset, options: opts);
       _activeBackend = InferenceBackend.gpu;
     } catch (_) {}
-
     if (_interpreter == null && Platform.isAndroid) {
       try {
         final opts = InterpreterOptions()..useNnApiForAndroid = true;
@@ -49,12 +67,10 @@ class TfliteService {
         _activeBackend = InferenceBackend.nnapi;
       } catch (_) {}
     }
-
     if (_interpreter == null) {
       _interpreter = await Interpreter.fromAsset(asset);
       _activeBackend = InferenceBackend.cpu;
     }
-
     _isolateInterpreter = await IsolateInterpreter.create(
       address: _interpreter!.address,
     );
@@ -71,12 +87,10 @@ class TfliteService {
     final newH = (image.height * scale).round();
     final padX = ((inputSize - newW) / 2).round();
     final padY = ((inputSize - newH) / 2).round();
-
     final resized = img.copyResize(image, width: newW, height: newH);
     final canvas = img.Image(width: inputSize, height: inputSize);
     img.fill(canvas, color: img.ColorRgb8(114, 114, 114));
     img.compositeImage(canvas, resized, dstX: padX, dstY: padY);
-
     final input = Float32List(inputSize * inputSize * 3);
     int idx = 0;
     for (int y = 0; y < inputSize; y++) {
@@ -102,7 +116,6 @@ class TfliteService {
     final padY = ((inputSize - newH) / 2) / inputSize;
     final activeW = newW / inputSize;
     final activeH = newH / inputSize;
-
     final detections = <Detection>[];
     for (int i = 0; i < maxDetections; i++) {
       final det = output[i];
@@ -133,24 +146,6 @@ class TfliteService {
       input.reshape([1, inputSize, inputSize, 3]),
       outputBuffer,
     );
-
-      // ── TEMP DEBUG LOGGING ──────────────────────────────────────────────
-    final raw = outputBuffer[0];
-    for (int i = 0; i < maxDetections; i++) {
-      final det = raw[i];
-      if (det[4] > 0.4) { // low bar, catch near-miss confidences too
-        // ignore: avoid_print
-        print(
-          'RAW[$i] conf=${det[4].toStringAsFixed(3)} '
-          'classIdRaw=${det[5].toStringAsFixed(3)} '
-          'classIdRounded=${det[5].round()} '
-          'box=(${det[0].toStringAsFixed(3)},${det[1].toStringAsFixed(3)},'
-          '${det[2].toStringAsFixed(3)},${det[3].toStringAsFixed(3)})',
-        );
-      }
-    }
-    // ────────────────────────────────────────────────────────────────────
-
     return _parseOutput(outputBuffer[0], image.width, image.height);
   }
 
