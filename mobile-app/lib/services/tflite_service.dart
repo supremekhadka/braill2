@@ -23,7 +23,7 @@ enum InferenceBackend { gpu, nnapi, cpu }
 
 class TfliteService {
   static const int inputSize = 640;
-  static const double confidenceThreshold = 0.35;
+  static const double confidenceThreshold = 0.15;
   static const int maxDetections = 300;
 
   Interpreter? _interpreter;

@@ -88,12 +88,14 @@ class InferenceResponse {
   final String imageId;
   final String extractedText;
   final List<AnnotationItem> annotations;
+  final DateTime createdAt;
 
   const InferenceResponse({
     required this.id,
     required this.imageId,
     required this.extractedText,
     required this.annotations,
+    required this.createdAt,
   });
 
   factory InferenceResponse.fromJson(Map<String, dynamic> j) =>
@@ -104,6 +106,11 @@ class InferenceResponse {
         annotations: (j['annotations'] as List<dynamic>)
             .map((e) => AnnotationItem.fromJson(e as Map<String, dynamic>))
             .toList(),
+        // Falls back to "now" only if talking to an older backend that
+        // hasn't picked up the created_at addition yet.
+        createdAt: j['created_at'] != null
+            ? DateTime.parse(j['created_at'] as String)
+            : DateTime.now(),
       );
 }
 
@@ -111,13 +118,15 @@ class BatchInferenceResult {
   final String imageId;
   final String extractedText;
   final List<AnnotationItem> annotations;
- 
+  final DateTime? createdAt;
+
   const BatchInferenceResult({
     required this.imageId,
     required this.extractedText,
     required this.annotations,
+    this.createdAt,
   });
- 
+
   factory BatchInferenceResult.fromJson(Map<String, dynamic> json) {
     return BatchInferenceResult(
       imageId: json['image_id'] as String,
@@ -125,6 +134,9 @@ class BatchInferenceResult {
       annotations: (json['annotations'] as List<dynamic>)
           .map((a) => AnnotationItem.fromJson(a as Map<String, dynamic>))
           .toList(),
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'] as String)
+          : null,
     );
   }
 }

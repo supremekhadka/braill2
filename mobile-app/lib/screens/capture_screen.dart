@@ -2,8 +2,12 @@ import 'dart:io';
 import 'package:app/core/image_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
-import 'package:cunning_document_scanner_plus/cunning_document_scanner_plus.dart';
 import '../core/app_theme.dart';
+import '../core/document_scanner.dart';
+import '../core/inference_types.dart';
+import '../services/api_client.dart';
+import '../services/auth_service.dart';
+import '../services/settings_service.dart';
 import '../services/tflite_service.dart';
 import '../services/sahi_inference.dart';
 import '../core/line_reconstructor.dart';
@@ -15,7 +19,20 @@ enum InferenceMode { online, offline }
 
 class CaptureScreen extends StatefulWidget {
   final InferenceMode mode;
-  const CaptureScreen({super.key, required this.mode});
+  final SettingsService settingsService;
+
+  /// Optional — when provided, [ResultScreen] can also offer an online
+  /// "read again" option for images scanned here, uploading on demand.
+  final ApiClient? apiClient;
+  final AuthService? authService;
+
+  const CaptureScreen({
+    super.key,
+    required this.mode,
+    required this.settingsService,
+    this.apiClient,
+    this.authService,
+  });
 
   @override
   State<CaptureScreen> createState() => _CaptureScreenState();
@@ -49,8 +66,24 @@ class _CaptureScreenState extends State<CaptureScreen> {
       await _tfliteService.loadModel();
       if (mounted) setState(() => _modelLoaded = true);
     } catch (e) {
-      if (mounted) setState(() => _errorMessage = 'Failed to load model: $e');
+      if (mounted) {
+        setState(() => _errorMessage = 'Failed to prepare braille reader: $e');
+      }
     }
+  }
+
+  /// Runs the on-device braille reading pipeline against an already-scanned
+  /// image file, without re-invoking the scanner. Used both for the initial
+  /// scan and for [ResultScreen]'s "read again" action.
+  Future<RerunResult> _readBraille(String imagePath) async {
+    final bytes = await File(imagePath).readAsBytes();
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) throw Exception('Could not decode image');
+    final clamped = clampToFhd(decoded);
+    final detections = await _sahi.runSahi(clamped);
+    final lines = LineReconstructor.reconstruct(detections);
+    final text = buildTextFromLines(lines, BrailleLanguage.english);
+    return RerunResult(detections: detections, lines: lines, extractedText: text);
   }
 
   Future<void> _onScanTap() async {
@@ -63,19 +96,18 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
     String? scannedPath;
     try {
-      final pictures = await CunningDocumentScanner.getPictures(
-        noOfPages: 1,
-        isGalleryImportAllowed: true,
-        mode: ScannerMode.base,
+      scannedPath = await DocumentScanner.scanSingle(
+        autoCrop: widget.settingsService.autoCrop,
+        autoRotate: widget.settingsService.autoRotate,
+        allowGallery: true,
       );
-      if (pictures == null || pictures.isEmpty) {
+      if (scannedPath == null) {
         setState(() {
           _isLoading = false;
           _step = _Step.idle;
         });
         return;
       }
-      scannedPath = pictures.first;
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -86,37 +118,28 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
 
     setState(() => _step = _Step.decoding);
-    final bytes = await File(scannedPath).readAsBytes();
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) {
-      setState(() {
-        _isLoading = false;
-        _step = _Step.idle;
-        _errorMessage = 'Could not decode image';
-      });
-      return;
-    }
-
-    final clamped = clampToFhd(decoded);
-    setState(() => _step = _Step.inference);
     List<Detection> detections;
+    List<BrailleLine> lines;
+    String text;
     try {
-      detections = await _sahi.runSahi(clamped);
+      setState(() => _step = _Step.reading);
+      final result = await _readBraille(scannedPath);
+      detections = result.detections;
+      lines = result.lines;
+      text = result.extractedText;
     } catch (e) {
       setState(() {
         _isLoading = false;
         _step = _Step.idle;
-        _errorMessage = 'Inference error: $e';
+        _errorMessage = 'Could not read braille: $e';
       });
       return;
     }
 
     setState(() => _step = _Step.reconstructing);
-    final lines = LineReconstructor.reconstruct(detections);
 
     // Save to history (offline mode only) — always store English for history
     if (widget.mode == InferenceMode.offline) {
-      final text = buildTextFromLines(lines, BrailleLanguage.english);
       await _history.save(
         HistoryEntry(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -152,6 +175,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
           detections: detections,
           lines: lines,
           initialLanguage: _language,
+          apiClient: widget.apiClient,
+          authService: widget.authService,
         ),
       ),
     );
@@ -202,15 +227,15 @@ enum _Step {
   idle,
   scanning,
   decoding,
-  inference,
+  reading,
   reconstructing;
 
   String get label => switch (this) {
     _Step.idle => 'Scan or upload',
     _Step.scanning => 'Scanning…',
     _Step.decoding => 'Loading image…',
-    _Step.inference => 'Running inference…',
-    _Step.reconstructing => 'Reconstructing…',
+    _Step.reading => 'Reading braille…',
+    _Step.reconstructing => 'Assembling text…',
   };
 }
 
@@ -331,7 +356,7 @@ class _LoadingModelBanner extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        Text('Loading model…', style: context.text.bodyMedium),
+        Text('Preparing braille reader…', style: context.text.bodyMedium),
       ],
     );
   }

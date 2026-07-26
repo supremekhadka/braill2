@@ -3,35 +3,47 @@ import 'package:flutter/material.dart';
 import '../core/app_theme.dart';
 import '../core/braille_mappings.dart';
 import '../core/line_reconstructor.dart';
+import '../services/api_client.dart';
+import '../services/auth_service.dart';
 import '../services/tflite_service.dart' show Detection;
 import 'result_screen.dart';
 
 /// A single scanned image plus its already-normalised detections, in the
 /// shape [ResultScreen] expects. Built by OnlineCaptureScreen._runBatch
-/// after batch inference returns.
+/// after batch braille reading returns.
 class BatchScanItem {
   final File imageFile;
+  final String? imageId;
   final List<Detection> detections;
   final List<BrailleLine> lines;
   final String extractedText;
   const BatchScanItem({
     required this.imageFile,
+    this.imageId,
     required this.detections,
     required this.lines,
     required this.extractedText,
   });
 }
 
-/// Lists the results of a batch inference run. Tapping an item opens the
-/// existing [ResultScreen] (shared with single-scan and offline mode) for
-/// that specific image.
+/// Lists the results of a batch braille-reading run. Tapping an item opens
+/// the existing [ResultScreen] (shared with single-scan and offline mode)
+/// for that specific image.
 class BatchResultScreen extends StatelessWidget {
   final List<BatchScanItem> items;
   final BrailleLanguage initialLanguage;
+
+  /// Passed straight through to each [ResultScreen] so every item can offer
+  /// both an offline (on-device) and online (server) "read again" option.
+  final ApiClient? apiClient;
+  final AuthService? authService;
+
   const BatchResultScreen({
     super.key,
     required this.items,
     required this.initialLanguage,
+    this.apiClient,
+    this.authService,
   });
 
   void _openItem(BuildContext context, BatchScanItem item) {
@@ -44,6 +56,9 @@ class BatchResultScreen extends StatelessWidget {
           lines: item.lines,
           initialLanguage: initialLanguage,
           cachedText: item.extractedText,
+          uploadedImageId: item.imageId,
+          apiClient: apiClient,
+          authService: authService,
         ),
       ),
     );

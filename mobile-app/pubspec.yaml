@@ -44,10 +44,13 @@ dependencies:
   path_provider: ^2.1.6
   google_fonts: ^8.1.0
   shared_preferences: ^2.5.5
-  cunning_document_scanner_plus: 1.0.3
   http: ^1.2.2
   flutter_secure_storage: ^10.3.1
   connectivity_plus: ^7.3.0
+  flutter_tts: ^4.2.5
+  permission_handler: ^12.0.3
+  path: ^1.9.1
+  cunning_document_scanner_plus: ^1.0.3
 
 dev_dependencies:
   flutter_test:

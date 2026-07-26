@@ -45,12 +45,16 @@ class _HistoryScreenState extends State<HistoryScreen>
   final _localService = HistoryService();
 
   List<HistoryEntry>? _offlineEntries;
+  List<InferenceResponse>? _onlineEntries;
+  bool _onlineLoading = false;
+  String? _onlineError;
 
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
+    _tabs = TabController(length: 3, vsync: this); // All, Online, Offline
     _loadOffline();
+    if (widget.authService.isLoggedIn) _loadOnline();
   }
 
   @override
@@ -79,6 +83,50 @@ class _HistoryScreenState extends State<HistoryScreen>
     }
   }
 
+  // ── Online ────────────────────────────────────────────────────────────────
+
+  Future<void> _loadOnline() async {
+    setState(() {
+      _onlineLoading = true;
+      _onlineError = null;
+    });
+    try {
+      final entries = await widget.apiClient.getHistory(
+        widget.authService.token!,
+      );
+      if (mounted) {
+        setState(() {
+          _onlineLoading = false;
+          _onlineEntries = entries;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _onlineLoading = false;
+          _onlineError = e.toString();
+        });
+      }
+    }
+  }
+
+  Future<void> _deleteOnline(String id) async {
+    final previous = _onlineEntries;
+    setState(
+      () => _onlineEntries = _onlineEntries?.where((e) => e.id != id).toList(),
+    );
+    try {
+      await widget.apiClient.deleteHistoryEntry(widget.authService.token!, id);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _onlineEntries = previous); // revert on failure
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not delete: $e')));
+      }
+    }
+  }
+
   // ── Shared ────────────────────────────────────────────────────────────────
 
   Future<bool?> _showClearDialog() => showDialog<bool>(
@@ -90,7 +138,7 @@ class _HistoryScreenState extends State<HistoryScreen>
       ),
       title: Text('Clear history', style: ctx.text.headlineSmall),
       content: Text(
-        'All offline scan history will be removed. This cannot be undone.',
+        'All offline reading history will be removed. This cannot be undone.',
         style: ctx.text.bodyMedium,
       ),
       actions: [
@@ -135,10 +183,59 @@ class _HistoryScreenState extends State<HistoryScreen>
           lines: lines,
           initialLanguage: BrailleLanguage.english,
           cachedText: entry.text,
+          apiClient: widget.apiClient,
+          authService: widget.authService,
         ),
       ),
     );
   }
+
+  Future<void> _openOnlineEntry(
+    BuildContext context,
+    InferenceResponse entry,
+  ) async {
+    try {
+      final token = widget.authService.token!;
+      final file = await widget.apiClient.downloadImage(token, entry.imageId);
+      final detections = _annotationsToDetections(entry.annotations);
+      final lines = LineReconstructor.reconstruct(detections);
+
+      if (!context.mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ResultScreen(
+            imageFile: file,
+            detections: detections,
+            lines: lines,
+            initialLanguage: BrailleLanguage.english,
+            cachedText: entry.extractedText,
+            uploadedImageId: entry.imageId,
+            apiClient: widget.apiClient,
+            authService: widget.authService,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not load image: $e')));
+      }
+    }
+  }
+
+  /// Combines offline + online entries into a single date-sorted list
+  /// (latest first) for the "All" tab.
+  List<_UnifiedEntry> get _combined {
+    final combined = <_UnifiedEntry>[
+      ...(_offlineEntries ?? []).map(_UnifiedEntry.offline),
+      ...(_onlineEntries ?? []).map(_UnifiedEntry.online),
+    ];
+    combined.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return combined;
+  }
+
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -150,7 +247,7 @@ class _HistoryScreenState extends State<HistoryScreen>
           AnimatedBuilder(
             animation: _tabs,
             builder: (_, __) {
-              if (_tabs.index != 0) return const SizedBox.shrink();
+              if (_tabs.index != 2) return const SizedBox.shrink();
               if ((_offlineEntries ?? []).isEmpty)
                 return const SizedBox.shrink();
               return IconButton(
@@ -164,25 +261,122 @@ class _HistoryScreenState extends State<HistoryScreen>
         bottom: TabBar(
           controller: _tabs,
           tabs: const [
-            Tab(text: 'Offline'),
+            Tab(text: 'All'),
             Tab(text: 'Online'),
+            Tab(text: 'Offline'),
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabs,
         children: [
+          _AllTab(
+            entries: (_offlineEntries == null && _onlineEntries == null)
+                ? null
+                : _combined,
+            onOfflineTap: _openOfflineEntry,
+            onOnlineTap: _openOnlineEntry,
+            onOfflineDelete: _deleteOffline,
+            onOnlineDelete: _deleteOnline,
+          ),
+          _OnlineTab(
+            authService: widget.authService,
+            entries: _onlineEntries,
+            loading: _onlineLoading,
+            error: _onlineError,
+            onRetry: _loadOnline,
+            onTap: _openOnlineEntry,
+            onDelete: _deleteOnline,
+          ),
           _OfflineTab(
             entries: _offlineEntries,
             onDelete: _deleteOffline,
             onTap: _openOfflineEntry,
           ),
-          _OnlineTab(
-            authService: widget.authService,
-            apiClient: widget.apiClient,
-          ),
         ],
       ),
+    );
+  }
+}
+
+/// A single entry that could be from either history source, normalised for
+/// the combined "All" tab.
+class _UnifiedEntry {
+  final String mode; // 'Online' | 'Offline'
+  final DateTime timestamp;
+  final HistoryEntry? offlineEntry;
+  final InferenceResponse? onlineEntry;
+
+  const _UnifiedEntry._({
+    required this.mode,
+    required this.timestamp,
+    this.offlineEntry,
+    this.onlineEntry,
+  });
+
+  factory _UnifiedEntry.offline(HistoryEntry e) => _UnifiedEntry._(
+    mode: 'Offline',
+    timestamp: e.timestamp,
+    offlineEntry: e,
+  );
+
+  factory _UnifiedEntry.online(InferenceResponse e) => _UnifiedEntry._(
+    mode: 'Online',
+    timestamp: e.createdAt,
+    onlineEntry: e,
+  );
+}
+
+// ── All tab ─────────────────────────────────────────────────────────────────
+
+class _AllTab extends StatelessWidget {
+  final List<_UnifiedEntry>? entries;
+  final void Function(BuildContext, HistoryEntry) onOfflineTap;
+  final Future<void> Function(BuildContext, InferenceResponse) onOnlineTap;
+  final void Function(String id) onOfflineDelete;
+  final Future<void> Function(String id) onOnlineDelete;
+
+  const _AllTab({
+    required this.entries,
+    required this.onOfflineTap,
+    required this.onOnlineTap,
+    required this.onOfflineDelete,
+    required this.onOnlineDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (entries!.isEmpty) {
+      return _EmptyState(
+        icon: Icons.history_toggle_off_rounded,
+        title: 'No scans yet',
+        subtitle: 'Your online and offline reading history will appear here',
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      itemCount: entries!.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      itemBuilder: (context, i) {
+        final entry = entries![i];
+        if (entry.offlineEntry != null) {
+          final e = entry.offlineEntry!;
+          return _HistoryCard(
+            entry: e,
+            onDelete: () => onOfflineDelete(e.id),
+            onTap: () => onOfflineTap(context, e),
+          );
+        }
+        final e = entry.onlineEntry!;
+        return _OnlineHistoryCardWrapper(
+          entry: e,
+          onTap: () => onOnlineTap(context, e),
+          onDelete: () => onOnlineDelete(e.id),
+        );
+      },
     );
   }
 }
@@ -209,15 +403,17 @@ class _OfflineTab extends StatelessWidget {
       return _EmptyState(
         icon: Icons.history_toggle_off_rounded,
         title: 'No offline scans yet',
-        subtitle: 'Your offline scan results will appear here',
+        subtitle: 'Your offline reading results will appear here',
       );
     }
+    final sorted = [...entries!]
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
     return ListView.separated(
       padding: const EdgeInsets.all(AppSpacing.lg),
-      itemCount: entries!.length,
+      itemCount: sorted.length,
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, i) {
-        final entry = entries![i];
+        final entry = sorted[i];
         return _HistoryCard(
           entry: entry,
           onDelete: () => onDelete(entry.id),
@@ -230,81 +426,39 @@ class _OfflineTab extends StatelessWidget {
 
 // ── Online tab ────────────────────────────────────────────────────────────────
 
-class _OnlineTab extends StatefulWidget {
+class _OnlineTab extends StatelessWidget {
   final AuthService authService;
-  final ApiClient apiClient;
+  final List<InferenceResponse>? entries;
+  final bool loading;
+  final String? error;
+  final VoidCallback onRetry;
+  final Future<void> Function(BuildContext, InferenceResponse) onTap;
+  final Future<void> Function(String id) onDelete;
 
-  const _OnlineTab({required this.authService, required this.apiClient});
-
-  @override
-  State<_OnlineTab> createState() => _OnlineTabState();
-}
-
-class _OnlineTabState extends State<_OnlineTab> {
-  List<InferenceResponse>? _entries;
-  bool _loading = false;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.authService.isLoggedIn) _load();
-  }
-
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final entries = await widget.apiClient.getHistory(
-        widget.authService.token!,
-      );
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _entries = entries;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _error = e.toString();
-        });
-      }
-    }
-  }
-
-  Future<void> _deleteEntry(String id) async {
-    final previous = _entries;
-    setState(() => _entries = _entries?.where((e) => e.id != id).toList());
-    try {
-      await widget.apiClient.deleteHistoryEntry(widget.authService.token!, id);
-    } catch (e) {
-      if (mounted) {
-        setState(() => _entries = previous); // revert on failure
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not delete: $e')),
-        );
-      }
-    }
-  }
+  const _OnlineTab({
+    required this.authService,
+    required this.entries,
+    required this.loading,
+    required this.error,
+    required this.onRetry,
+    required this.onTap,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.authService.isLoggedIn) {
+    if (!authService.isLoggedIn) {
       return _EmptyState(
         icon: Icons.cloud_off_rounded,
         title: 'Not signed in',
         subtitle:
-            'Log in via Online mode to view your server-side scan history',
+            'Log in via Online mode to view your server-side reading history',
       );
     }
-    if (_loading) {
+    if (loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null) {
+    if (error != null) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.lg),
@@ -318,13 +472,13 @@ class _OnlineTabState extends State<_OnlineTab> {
               ),
               const SizedBox(height: 16),
               Text(
-                _error!,
+                error!,
                 style: context.text.bodyMedium,
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
               GestureDetector(
-                onTap: _load,
+                onTap: onRetry,
                 child: Text(
                   'Retry',
                   style: TextStyle(
@@ -338,7 +492,7 @@ class _OnlineTabState extends State<_OnlineTab> {
         ),
       );
     }
-    if (_entries == null || _entries!.isEmpty) {
+    if (entries == null || entries!.isEmpty) {
       return _EmptyState(
         icon: Icons.cloud_outlined,
         title: 'No online scans yet',
@@ -347,17 +501,17 @@ class _OnlineTabState extends State<_OnlineTab> {
     }
     return ListView.separated(
       padding: const EdgeInsets.all(AppSpacing.lg),
-      itemCount: _entries!.length,
+      itemCount: entries!.length,
       separatorBuilder: (_, __) => const SizedBox(height: 12),
-      itemBuilder: (context, i) => _OnlineHistoryCard(
-        entry: _entries![i],
-        authService: widget.authService,
-        apiClient: widget.apiClient,
-        onDelete: () => _deleteEntry(_entries![i].id),
+      itemBuilder: (context, i) => _OnlineHistoryCardWrapper(
+        entry: entries![i],
+        onTap: () => onTap(context, entries![i]),
+        onDelete: () => onDelete(entries![i].id),
       ),
     );
   }
 }
+
 // ── Shared sub-widgets ────────────────────────────────────────────────────────
 
 class _EmptyState extends StatelessWidget {
@@ -533,67 +687,25 @@ class _HistoryCard extends StatelessWidget {
   }
 }
 
-class _OnlineHistoryCard extends StatefulWidget {
+/// Adapts an [InferenceResponse] card for use in both the Online tab and
+/// the combined All tab, resolving auth/apiClient from an InheritedWidget-
+/// free context via a small static lookup isn't available here, so callers
+/// pass fully-bound onTap/onDelete callbacks instead.
+class _OnlineHistoryCardWrapper extends StatelessWidget {
   final InferenceResponse entry;
-  final AuthService authService;
-  final ApiClient apiClient;
+  final VoidCallback onTap;
   final VoidCallback onDelete;
 
-  const _OnlineHistoryCard({
+  const _OnlineHistoryCardWrapper({
     required this.entry,
-    required this.authService,
-    required this.apiClient,
+    required this.onTap,
     required this.onDelete,
   });
 
   @override
-  State<_OnlineHistoryCard> createState() => _OnlineHistoryCardState();
-}
-
-class _OnlineHistoryCardState extends State<_OnlineHistoryCard> {
-  bool _opening = false;
-
-  Future<void> _open(BuildContext context) async {
-    if (_opening) return;
-    setState(() => _opening = true);
-    try {
-      final token = widget.authService.token!;
-      final file = await widget.apiClient.downloadImage(
-        token,
-        widget.entry.imageId,
-      );
-      final detections = _annotationsToDetections(widget.entry.annotations);
-      final lines = LineReconstructor.reconstruct(detections);
-
-      if (!mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ResultScreen(
-            imageFile: file,
-            detections: detections,
-            lines: lines,
-            initialLanguage: BrailleLanguage.english,
-            cachedText: widget.entry.extractedText,
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not load image: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _opening = false);
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final token = widget.authService.token!;
     return GestureDetector(
-      onTap: () => _open(context),
+      onTap: onTap,
       child: Container(
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
@@ -607,34 +719,15 @@ class _OnlineHistoryCardState extends State<_OnlineHistoryCard> {
             const SizedBox(width: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(AppRadius.sm),
-              child: SizedBox(
+              child: Container(
                 width: 84,
                 height: 84,
-                child: Image.network(
-                  widget.apiClient.imageUri(widget.entry.imageId).toString(),
-                  headers: widget.apiClient.imageHeaders(token),
-                  fit: BoxFit.cover,
-                  loadingBuilder: (ctx, child, progress) {
-                    if (progress == null) return child;
-                    return Container(
-                      color: context.bgSurfaceHigh,
-                      alignment: Alignment.center,
-                      child: const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    );
-                  },
-                  errorBuilder: (_, __, ___) => Container(
-                    color: context.bgSurfaceHigh,
-                    alignment: Alignment.center,
-                    child: Icon(
-                      Icons.image_not_supported_outlined,
-                      size: 28,
-                      color: context.textDisabled,
-                    ),
-                  ),
+                color: context.bgSurfaceHigh,
+                alignment: Alignment.center,
+                child: Icon(
+                  Icons.cloud_outlined,
+                  size: 24,
+                  color: context.textDisabled,
                 ),
               ),
             ),
@@ -650,16 +743,16 @@ class _OnlineHistoryCardState extends State<_OnlineHistoryCard> {
                         const _ModeChip(mode: 'Online'),
                         const Spacer(),
                         Text(
-                          '${widget.entry.annotations.length} cells',
+                          '${entry.annotations.length} cells',
                           style: context.text.bodyMedium?.copyWith(fontSize: 12),
                         ),
                       ],
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      widget.entry.extractedText.trim().isEmpty
+                      entry.extractedText.trim().isEmpty
                           ? 'No text detected'
-                          : widget.entry.extractedText.replaceAll('\n', ' '),
+                          : entry.extractedText.replaceAll('\n', ' '),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: context.text.bodyLarge?.copyWith(fontSize: 14),
@@ -668,25 +761,15 @@ class _OnlineHistoryCardState extends State<_OnlineHistoryCard> {
                 ),
               ),
             ),
-            if (_opening)
-              const Padding(
-                padding: EdgeInsets.only(right: 4),
-                child: SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              )
-            else
-              IconButton(
-                icon: Icon(
-                  Icons.close_rounded,
-                  size: 18,
-                  color: context.textDisabled,
-                ),
-                tooltip: 'Remove',
-                onPressed: widget.onDelete,
+            IconButton(
+              icon: Icon(
+                Icons.close_rounded,
+                size: 18,
+                color: context.textDisabled,
               ),
+              tooltip: 'Remove',
+              onPressed: onDelete,
+            ),
           ],
         ),
       ),

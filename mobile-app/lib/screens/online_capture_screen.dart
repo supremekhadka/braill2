@@ -3,14 +3,16 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:cunning_document_scanner_plus/cunning_document_scanner_plus.dart';
 
 import '../core/app_theme.dart';
 import '../core/braille_mappings.dart';
 import '../core/line_reconstructor.dart';
+import '../core/document_scanner.dart';
+import '../core/inference_types.dart';
 import '../models/api_models.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
+import '../services/settings_service.dart';
 import '../services/tflite_service.dart' show Detection;
 import 'batch_result_screen.dart';
 import 'result_screen.dart';
@@ -38,15 +40,15 @@ Future<File> _clampedFileFor(String path) async {
   }
 }
 
-/// Max images accepted per batch inference request. Keep this in sync with
-/// BATCH_SIZE in backend/app/core/configs.py.
+/// Max images accepted per batch braille-reading request. Keep this in sync
+/// with BATCH_SIZE in backend/app/core/configs.py.
 const int kBatchSize = 10;
 
 ///   1. On init, check auth → redirect to [LoginScreen] if not logged in.
 ///   2. Open the document scanner — one page in single mode, up to
-///      [kBatchSize] pages in batch mode.
+///      [kBatchSize] pages (scanned one at a time) in batch mode.
 ///   3. Upload the image(s) (`POST /api/image/upload`).
-///   4. Request server-side inference — single
+///   4. Request server-side braille reading — single
 ///      (`POST /api/inference/predict`) or batch
 ///      (`POST /api/inference/predict/batch`).
 ///   5. Server annotations already arrive as 0.0–1.0 fractions of image
@@ -56,11 +58,13 @@ const int kBatchSize = 10;
 class OnlineCaptureScreen extends StatefulWidget {
   final AuthService authService;
   final ApiClient apiClient;
+  final SettingsService settingsService;
 
   const OnlineCaptureScreen({
     super.key,
     required this.authService,
     required this.apiClient,
+    required this.settingsService,
   });
 
   @override
@@ -81,6 +85,55 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
     super.initState();
   }
 
+  /// Scans up to [maxPages] pages one at a time using the document scanner,
+  /// stopping early if the person cancels a subsequent scan.
+  Future<List<String>> _scanPages(int maxPages) async {
+    final paths = <String>[];
+    for (var i = 0; i < maxPages; i++) {
+      final path = await DocumentScanner.scanSingle(
+        autoCrop: widget.settingsService.autoCrop,
+        autoRotate: widget.settingsService.autoRotate,
+        allowGallery: true,
+      );
+      if (path == null) break;
+      paths.add(path);
+      if (maxPages > 1 && mounted) {
+        final addAnother = await _confirmAddAnother(paths.length, maxPages);
+        if (!addAnother) break;
+      }
+    }
+    return paths;
+  }
+
+  Future<bool> _confirmAddAnother(int scanned, int max) async {
+    if (scanned >= max) return false;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: ctx.bgSurface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+        ),
+        title: Text('Scan another page?', style: ctx.text.headlineSmall),
+        content: Text(
+          'Scanned $scanned of up to $max. Add another page or finish now.',
+          style: ctx.text.bodyMedium,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Finish', style: TextStyle(color: ctx.textMuted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('Add another', style: TextStyle(color: ctx.accent)),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
   Future<void> _onScanTap() async {
     if (_isLoading) return;
     setState(() {
@@ -89,14 +142,10 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
       _errorMessage = null;
     });
 
-    List<String>? pictures;
+    List<String> pictures;
     try {
-      pictures = await CunningDocumentScanner.getPictures(
-        noOfPages: _mode == _CaptureMode.batch ? kBatchSize : 1,
-        isGalleryImportAllowed: true,
-        mode: ScannerMode.base,
-      );
-      if (pictures == null || pictures.isEmpty) {
+      pictures = await _scanPages(_mode == _CaptureMode.batch ? kBatchSize : 1);
+      if (pictures.isEmpty) {
         _resetIdle();
         return;
       }
@@ -110,6 +159,34 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
     } else {
       await _runSingle(pictures.first);
     }
+  }
+
+  /// Re-reads braille on an already-uploaded image, used both for the
+  /// initial single-scan flow and for [ResultScreen]'s "read again" action.
+  Future<RerunResult> _readBrailleOnline(String uploadedImageId) async {
+    final result = await widget.apiClient.predict(
+      widget.authService.token!,
+      uploadedImageId,
+      _langCode(_language),
+    );
+    final detections = result.annotations.map((a) {
+      return Detection(
+        x1: a.x1.clamp(0.0, 1.0),
+        y1: a.y1.clamp(0.0, 1.0),
+        x2: a.x2.clamp(0.0, 1.0),
+        y2: a.y2.clamp(0.0, 1.0),
+        confidence: 1.0, // server doesn't return confidence scores
+        classId: a.classId,
+      );
+    }).toList();
+    final lines = detections.isEmpty
+        ? <BrailleLine>[]
+        : LineReconstructor.reconstruct(detections);
+    return RerunResult(
+      detections: detections,
+      lines: lines,
+      extractedText: result.extractedText,
+    );
   }
 
   Future<void> _runSingle(String scannedPath) async {
@@ -130,41 +207,16 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
       return;
     }
 
-    setState(() => _step = _Step.predicting);
-    InferenceResponse result;
+    setState(() => _step = _Step.reading);
+    RerunResult result;
     try {
-      result = await widget.apiClient.predict(
-        widget.authService.token!,
-        uploaded.id,
-        _langCode(_language),
-      );
+      result = await _readBrailleOnline(uploaded.id);
     } on ApiException catch (e) {
-      _resetWithError('Inference failed (${e.statusCode}): ${e.message}');
+      _resetWithError('Reading failed (${e.statusCode}): ${e.message}');
       return;
     } catch (e) {
-      _resetWithError('Inference error: $e');
+      _resetWithError('Reading error: $e');
       return;
-    }
-
-    setState(() => _step = _Step.processing);
-    List<Detection> detections = [];
-    List<BrailleLine> lines = [];
-    try {
-      detections = result.annotations.map((a) {
-        return Detection(
-          x1: a.x1.clamp(0.0, 1.0),
-          y1: a.y1.clamp(0.0, 1.0),
-          x2: a.x2.clamp(0.0, 1.0),
-          y2: a.y2.clamp(0.0, 1.0),
-          confidence: 1.0, // server doesn't return confidence scores
-          classId: a.classId,
-        );
-      }).toList();
-      if (detections.isNotEmpty) {
-        lines = LineReconstructor.reconstruct(detections);
-      }
-    } catch (_) {
-      // Non-fatal: fall through with empty detections.
     }
 
     _resetIdle();
@@ -174,10 +226,13 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
       MaterialPageRoute(
         builder: (_) => ResultScreen(
           imageFile: imageFile,
-          detections: detections,
-          lines: lines,
+          detections: result.detections,
+          lines: result.lines,
           initialLanguage: _language,
           cachedText: result.extractedText,
+          uploadedImageId: uploaded.id,
+          apiClient: widget.apiClient,
+          authService: widget.authService,
         ),
       ),
     );
@@ -213,7 +268,7 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
       return;
     }
 
-    setState(() => _step = _Step.predicting);
+    setState(() => _step = _Step.reading);
     List<BatchInferenceResult> results;
     try {
       results = await widget.apiClient.predictBatch(
@@ -222,10 +277,10 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
         _langCode(_language),
       );
     } on ApiException catch (e) {
-      _resetWithError('Batch inference failed (${e.statusCode}): ${e.message}');
+      _resetWithError('Batch reading failed (${e.statusCode}): ${e.message}');
       return;
     } catch (e) {
-      _resetWithError('Batch inference error: $e');
+      _resetWithError('Batch reading error: $e');
       return;
     }
 
@@ -240,7 +295,7 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
 
       List<Detection> detections = [];
       List<BrailleLine> lines = [];
-       if (result != null) {
+      if (result != null) {
         try {
           detections = result.annotations.map((a) {
             return Detection(
@@ -263,6 +318,7 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
       items.add(
         BatchScanItem(
           imageFile: imageFile,
+          imageId: i < uploaded.length ? uploaded[i].id : null,
           detections: detections,
           lines: lines,
           extractedText: result?.extractedText ?? '',
@@ -278,6 +334,8 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
         builder: (_) => BatchResultScreen(
           items: items,
           initialLanguage: _language,
+          apiClient: widget.apiClient,
+          authService: widget.authService,
         ),
       ),
     );
@@ -452,15 +510,15 @@ enum _Step {
   idle,
   scanning,
   uploading,
-  predicting,
+  reading,
   processing;
 
   String get label => switch (this) {
     _Step.idle => 'Scan or upload',
     _Step.scanning => 'Scanning…',
     _Step.uploading => 'Uploading to server…',
-    _Step.predicting => 'Running server inference…',
-    _Step.processing => 'Processing results…',
+    _Step.reading => 'Reading braille on server…',
+    _Step.processing => 'Finishing up…',
   };
 }
 
@@ -538,7 +596,7 @@ class _StepProgress extends StatelessWidget {
   static const _steps = [
     _Step.scanning,
     _Step.uploading,
-    _Step.predicting,
+    _Step.reading,
     _Step.processing,
   ];
 

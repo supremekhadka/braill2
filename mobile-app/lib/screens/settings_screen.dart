@@ -5,9 +5,7 @@ import '../services/settings_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   final SettingsService settingsService;
-
   const SettingsScreen({super.key, required this.settingsService});
-
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -18,10 +16,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _success;
   String? _error;
 
+  // ── Scanning toggles ────────────────────────────────────────────────────
+  late bool _autoCrop;
+  late bool _autoRotate;
+
   @override
   void initState() {
     super.initState();
     _urlCtrl = TextEditingController(text: widget.settingsService.baseUrl);
+    _autoCrop = widget.settingsService.autoCrop;
+    _autoRotate = widget.settingsService.autoRotate;
   }
 
   @override
@@ -66,6 +70,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  Future<void> _setAutoCrop(bool value) async {
+    setState(() => _autoCrop = value);
+    await widget.settingsService.setAutoCrop(value);
+  }
+
+  Future<void> _setAutoRotate(bool value) async {
+    setState(() => _autoRotate = value);
+    await widget.settingsService.setAutoRotate(value);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -79,7 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Text('Server', style: context.text.titleLarge),
             const SizedBox(height: 4),
             Text(
-              'Set the base URL of your Braill. backend. '
+              'Set the base URL of your Braille backend. '
               'Restart the app after changing this.',
               style: context.text.bodyMedium,
             ),
@@ -158,8 +172,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ),
+
+            const SizedBox(height: AppSpacing.xl),
+            const Divider(height: 1),
+            const SizedBox(height: AppSpacing.xl),
+
+            // ── Scanning section ─────────────────────────────────────────
+            Text('Scanning', style: context.text.titleLarge),
+            const SizedBox(height: 4),
+            Text(
+              'Control how the document scanner processes each capture. '
+              'Both are off by default so the photo you take is used as-is.',
+              style: context.text.bodyMedium,
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            _ToggleRow(
+              icon: Icons.crop_free_rounded,
+              label: 'Auto-crop',
+              subtitle: 'Automatically detect edges and crop to the page',
+              value: _autoCrop,
+              onChanged: _setAutoCrop,
+            ),
+            const SizedBox(height: 12),
+            _ToggleRow(
+              icon: Icons.screen_rotation_alt_outlined,
+              label: 'Auto-rotate',
+              subtitle: 'Automatically straighten the page after capture',
+              value: _autoRotate,
+              onChanged: _setAutoRotate,
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _ToggleRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _ToggleRow({
+    required this.icon,
+    required this.label,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: 10,
+      ),
+      decoration: BoxDecoration(
+        color: context.bgSurface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.border),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: context.textMuted),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: context.text.titleMedium),
+                Text(
+                  subtitle,
+                  style: context.text.bodyMedium?.copyWith(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+            value: value,
+            onChanged: onChanged,
+            activeColor: context.accent,
+          ),
+        ],
       ),
     );
   }
@@ -170,14 +267,12 @@ class _HintRow extends StatelessWidget {
   final String label;
   final String value;
   final VoidCallback onTap;
-
   const _HintRow({
     required this.icon,
     required this.label,
     required this.value,
     required this.onTap,
   });
-
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -225,14 +320,12 @@ class _ActionButton extends StatelessWidget {
   final bool loading;
   final VoidCallback onTap;
   final bool outlined;
-
   const _ActionButton({
     required this.label,
     required this.loading,
     required this.onTap,
     this.outlined = false,
   });
-
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
