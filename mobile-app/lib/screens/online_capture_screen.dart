@@ -60,11 +60,17 @@ class OnlineCaptureScreen extends StatefulWidget {
   final ApiClient apiClient;
   final SettingsService settingsService;
 
+  /// When true, kicks off the scan flow automatically on first frame —
+  /// used when this screen is reached directly from the home screen's
+  /// single scan button, so there's no extra tap before the camera opens.
+  final bool autoStart;
+
   const OnlineCaptureScreen({
     super.key,
     required this.authService,
     required this.apiClient,
     required this.settingsService,
+    this.autoStart = false,
   });
 
   @override
@@ -83,6 +89,9 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.autoStart) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onScanTap());
+    }
   }
 
   /// Scans up to [maxPages] pages one at a time using the document scanner,
@@ -91,6 +100,7 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
     final paths = <String>[];
     for (var i = 0; i < maxPages; i++) {
       final path = await DocumentScanner.scanSingle(
+        context: context,
         autoCrop: widget.settingsService.autoCrop,
         autoRotate: widget.settingsService.autoRotate,
         allowGallery: true,

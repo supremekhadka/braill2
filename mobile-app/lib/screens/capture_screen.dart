@@ -26,12 +26,19 @@ class CaptureScreen extends StatefulWidget {
   final ApiClient? apiClient;
   final AuthService? authService;
 
+  /// When true, kicks off the scan flow automatically as soon as the model
+  /// finishes loading — used when this screen is reached directly from the
+  /// home screen's single scan button, so there's no extra tap before the
+  /// camera opens.
+  final bool autoStart;
+
   const CaptureScreen({
     super.key,
     required this.mode,
     required this.settingsService,
     this.apiClient,
     this.authService,
+    this.autoStart = false,
   });
 
   @override
@@ -64,7 +71,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
   Future<void> _loadModel() async {
     try {
       await _tfliteService.loadModel();
-      if (mounted) setState(() => _modelLoaded = true);
+      if (mounted) {
+        setState(() => _modelLoaded = true);
+        if (widget.autoStart) _onScanTap();
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _errorMessage = 'Failed to prepare braille reader: $e');
@@ -97,6 +107,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     String? scannedPath;
     try {
       scannedPath = await DocumentScanner.scanSingle(
+        context: context,
         autoCrop: widget.settingsService.autoCrop,
         autoRotate: widget.settingsService.autoRotate,
         allowGallery: true,
