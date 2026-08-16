@@ -1,18 +1,15 @@
 import org.gradle.api.file.Directory
-
 allprojects {
     repositories {
         google()
         mavenCentral()
     }
 }
-
 val newBuildDir: Directory =
     rootProject.layout.buildDirectory
         .dir("../../build")
         .get()
 rootProject.layout.buildDirectory.value(newBuildDir)
-
 subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
@@ -41,13 +38,17 @@ subprojects {
                 jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
             }
         }
+        // Fix: some androidx.camera releases don't transitively pull in
+        // concurrent-futures, causing CallbackToFutureAdapter class-not-found
+        // errors during compilation of camera_android_camerax.
+        if (project.name == "camera_android_camerax") {
+            dependencies.add("implementation", "androidx.concurrent:concurrent-futures:1.2.0")
+        }
     }
 }
-
 subprojects {
     project.evaluationDependsOn(":app")
 }
-
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }

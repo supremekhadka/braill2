@@ -1,14 +1,72 @@
 enum BrailleLanguage {
   english,
+  nepali,
   unicode;
 
   String get label => switch (this) {
     BrailleLanguage.english => 'English',
+    BrailleLanguage.nepali => 'Nepali',
     BrailleLanguage.unicode => 'Unicode',
   };
 
   bool get isEnabled => true;
 }
+
+const Map<int, String> _nepaliMap = {
+  0: 'अ',
+  27: 'आ',
+  9: 'इ',
+  19: 'ई',
+  36: 'उ',
+  50: 'ऊ',
+  33: 'ऎ',
+  16: 'ए',
+  11: 'ऐ',
+  44: 'ऒ',
+  20: 'ओ',
+  41: 'औ',
+
+
+  4: 'क',
+  39: 'ख',
+  26: 'ग',
+  34: 'घ',
+  43: 'ङ',
+  8: 'च',
+  32: 'छ',
+  25: 'ज',
+  51: 'झ',
+  17: 'ञ',
+  61: 'ट',
+  57: 'ठ',
+  42: 'ड',
+  62: 'ढ',
+  59: 'ण',
+  29: 'त',
+  56: 'थ',
+  24: 'द',
+  45: 'ध',
+  28: 'न',
+  14: 'प',
+  21: 'फ',
+  2: 'ब',
+  23: 'भ',
+  12: 'म',
+  60: 'य',
+  22: 'र',
+  6: 'ल',
+  38: 'व',
+  40: 'श',
+  46: 'ष',
+  13: 'स',
+  18: 'ह',
+  30: 'क्ष',
+
+  48: 'ज्ञ',
+
+
+  55: '!'
+};
 
 const Map<int, String> _englishMap = {
   // Letters
@@ -62,6 +120,8 @@ String classIdToChar(int classId, BrailleLanguage language) {
   switch (language) {
     case BrailleLanguage.english:
       return _englishMap[classId] ?? '';
+    case BrailleLanguage.nepali:
+      return _nepaliMap[classId] ?? '';
     case BrailleLanguage.unicode:
       return _idToUnicode(classId);
   }
