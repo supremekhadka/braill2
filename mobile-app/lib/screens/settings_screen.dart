@@ -15,12 +15,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _saving = false;
   String? _success;
   String? _error;
-
-  // ── Scanning toggles ────────────────────────────────────────────────────
   late bool _autoCrop;
   late bool _autoRotate;
-
-  // ── Developer section ───────────────────────────────────────────────────
   late bool _developerMode;
   late double _confThreshold;
 
@@ -91,9 +87,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await widget.settingsService.setDeveloperModeEnabled(value);
   }
 
-  /// Called continuously while dragging, for a responsive label — the value
-  /// isn't persisted until [_commitConfThreshold] on drag end, so we're not
-  /// hitting SharedPreferences on every frame.
   void _previewConfThreshold(double value) {
     setState(() => _confThreshold = value);
   }
@@ -111,12 +104,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Scanning section ─────────────────────────────────────────
             Text('Scanning', style: context.text.titleLarge),
             const SizedBox(height: 4),
             Text(
               'Control how the document scanner processes each capture. '
-              'Both are off by default so the photo you take is used as-is.',
+              'Auto-crop is on by default; auto-rotate is off so pages are '
+              'used as captured.',
               style: context.text.bodyMedium,
             ),
             const SizedBox(height: AppSpacing.lg),
@@ -135,12 +128,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               value: _autoRotate,
               onChanged: _setAutoRotate,
             ),
-
             const SizedBox(height: AppSpacing.xl),
             const Divider(height: 1),
             const SizedBox(height: AppSpacing.xl),
-
-            // ── Developer section ────────────────────────────────────────
             _ToggleRow(
               icon: Icons.developer_mode_outlined,
               label: 'Developer options',
@@ -234,7 +224,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ],
               ),
-
               const SizedBox(height: AppSpacing.xl),
               Text('Detection', style: context.text.titleLarge),
               const SizedBox(height: 4),
@@ -263,7 +252,6 @@ class _ToggleRow extends StatelessWidget {
   final String subtitle;
   final bool value;
   final ValueChanged<bool> onChanged;
-
   const _ToggleRow({
     required this.icon,
     required this.label,
@@ -315,7 +303,6 @@ class _ConfidenceThresholdRow extends StatelessWidget {
   final double value;
   final ValueChanged<double> onChanged;
   final ValueChanged<double> onChangeEnd;
-
   const _ConfidenceThresholdRow({
     required this.value,
     required this.onChanged,
@@ -395,6 +382,7 @@ class _HintRow extends StatelessWidget {
     required this.value,
     required this.onTap,
   });
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -448,6 +436,7 @@ class _ActionButton extends StatelessWidget {
     required this.onTap,
     this.outlined = false,
   });
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(

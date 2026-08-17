@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../core/app_theme.dart';
 import '../core/braille_mappings.dart';
@@ -94,9 +95,28 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
     }
   }
 
-  /// Scans up to [maxPages] pages one at a time using the document scanner,
-  /// stopping early if the person cancels a subsequent scan.
+  /// Scans up to [maxPages] pages using the document scanner.
+  ///
+  /// When the cunning scanner is active (autoCrop or autoRotate on), it
+  /// natively supports capturing/importing several pages in one continuous
+  /// session, so we hand it `maxPages` directly and it returns them all at
+  /// once — no manual looping. When both settings are off we're on the
+  /// plain [SimpleCameraScreen] fallback, which only returns one page per
+  /// call, so we loop and ask "scan another?" between shots.
   Future<List<String>> _scanPages(int maxPages) async {
+    if (DocumentScanner.supportsNativeMultiPage(
+      autoCrop: widget.settingsService.autoCrop,
+      autoRotate: widget.settingsService.autoRotate,
+    )) {
+      return DocumentScanner.scanMultiple(
+        context: context,
+        autoCrop: widget.settingsService.autoCrop,
+        autoRotate: widget.settingsService.autoRotate,
+        allowGallery: true,
+        maxPages: maxPages,
+      );
+    }
+
     final paths = <String>[];
     for (var i = 0; i < maxPages; i++) {
       final path = await DocumentScanner.scanSingle(
@@ -113,6 +133,41 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
       }
     }
     return paths;
+  }
+
+  /// Fallback for when the plain-camera path is active (see [_scanPages]):
+  /// that path's gallery button only returns one image per call, so batch
+  /// mode also gets this platform multi-select picker as a direct way to
+  /// grab several existing photos at once.
+  Future<List<String>> _pickFromGallery(int maxPages) async {
+    final picked = await ImagePicker().pickMultiImage(limit: maxPages);
+    if (picked.length > maxPages) {
+      return picked.take(maxPages).map((x) => x.path).toList();
+    }
+    return picked.map((x) => x.path).toList();
+  }
+
+  Future<void> _onPickFromGalleryTap() async {
+    if (_isLoading) return;
+    setState(() {
+      _isLoading = true;
+      _step = _Step.scanning;
+      _errorMessage = null;
+    });
+
+    List<String> pictures;
+    try {
+      pictures = await _pickFromGallery(kBatchSize);
+      if (pictures.isEmpty) {
+        _resetIdle();
+        return;
+      }
+    } catch (e) {
+      _resetWithError('Gallery picker error: $e');
+      return;
+    }
+
+    await _runBatch(pictures);
   }
 
   Future<bool> _confirmAddAnother(int scanned, int max) async {
@@ -422,6 +477,17 @@ class _OnlineCaptureScreenState extends State<OnlineCaptureScreen> {
             _StepProgress(step: _step, visible: _isLoading),
             if (_isLoading) const SizedBox(height: AppSpacing.md),
             _ScanButton(loading: _isLoading, step: _step, onTap: _onScanTap),
+            if (_mode == _CaptureMode.batch &&
+                !DocumentScanner.supportsNativeMultiPage(
+                  autoCrop: widget.settingsService.autoCrop,
+                  autoRotate: widget.settingsService.autoRotate,
+                )) ...[
+              const SizedBox(height: AppSpacing.sm),
+              _GalleryPickButton(
+                loading: _isLoading,
+                onTap: _onPickFromGalleryTap,
+              ),
+            ],
             const SizedBox(height: AppSpacing.xl),
           ],
         ),
@@ -585,6 +651,53 @@ class _ScanButton extends StatelessWidget {
               const SizedBox(width: 12),
               Text(
                 step.label,
+                style: context.text.labelLarge?.copyWith(
+                  color: loading ? context.textDisabled : context.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Secondary action for batch mode: pick several existing photos from the
+/// gallery in one go, rather than scanning pages one at a time.
+class _GalleryPickButton extends StatelessWidget {
+  final bool loading;
+  final VoidCallback onTap;
+
+  const _GalleryPickButton({required this.loading, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      enabled: !loading,
+      label: 'Select multiple images from gallery',
+      child: GestureDetector(
+        onTap: loading ? null : onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            color: context.bgSurfaceHigh,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: context.border),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.photo_library_outlined,
+                size: 18,
+                color: loading ? context.textDisabled : context.textMuted,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Select from Gallery',
                 style: context.text.labelLarge?.copyWith(
                   color: loading ? context.textDisabled : context.textPrimary,
                 ),

@@ -5,9 +5,10 @@ import '../core/app_constants.dart';
 ///
 /// NOTE: the base-URL persistence here mirrors what `settings_screen.dart`
 /// already assumed (`baseUrl`, `setBaseUrl`, `resetBaseUrl`). This file adds
-/// `autoCrop` / `autoRotate`, both defaulting to `false`, which control
-/// whether document capture routes through the `edge_detection` scanner
-/// (see `core/document_scanner.dart`) or falls back to a plain camera shot.
+/// `autoCrop` / `autoRotate`, which control whether document capture routes
+/// through the cunning scanner (see `core/document_scanner.dart`) or falls
+/// back to a plain camera shot. `autoCrop` defaults to `true`; `autoRotate`
+/// defaults to `false`.
 ///
 /// `developerModeEnabled` gates a "Developer" section in the settings UI
 /// (server base URL + detection confidence threshold) that's hidden by
@@ -18,12 +19,11 @@ class SettingsService {
   static const _autoCropKey = 'settings_auto_crop';
   static const _developerModeKey = 'settings_developer_mode';
   static const _confThresholdKey = 'settings_conf_threshold';
-
   static const double defaultConfThreshold = 0.5;
 
   String _baseUrl = AppConstants.defaultBaseUrl;
   bool _autoRotate = false;
-  bool _autoCrop = false;
+  bool _autoCrop = true;
   bool _developerModeEnabled = false;
   double _confThreshold = defaultConfThreshold;
 
@@ -38,7 +38,7 @@ class SettingsService {
     final prefs = await SharedPreferences.getInstance();
     _baseUrl = prefs.getString(_baseUrlKey) ?? AppConstants.defaultBaseUrl;
     _autoRotate = prefs.getBool(_autoRotateKey) ?? false;
-    _autoCrop = prefs.getBool(_autoCropKey) ?? false;
+    _autoCrop = prefs.getBool(_autoCropKey) ?? true;
     _developerModeEnabled = prefs.getBool(_developerModeKey) ?? false;
     _confThreshold =
         prefs.getDouble(_confThresholdKey) ?? defaultConfThreshold;

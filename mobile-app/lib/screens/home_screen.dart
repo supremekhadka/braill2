@@ -1,24 +1,25 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../core/app_theme.dart';
-import '../core/braille_mappings.dart';
-import '../core/line_reconstructor.dart';
-import '../models/api_models.dart';
 import '../services/auth_service.dart';
 import '../services/api_client.dart';
-import '../services/history_service.dart';
 import '../services/settings_service.dart';
-import '../services/tflite_service.dart' show Detection;
 import 'capture_screen.dart';
 import 'history_screen.dart';
 import 'login_screen.dart';
 import 'online_capture_screen.dart';
-import 'result_screen.dart';
 import 'settings_screen.dart';
 
 enum _ScanMode { automatic, online, offline }
+
+extension on _ScanMode {
+  String get label => switch (this) {
+    _ScanMode.automatic => 'Automatic',
+    _ScanMode.online => 'Online',
+    _ScanMode.offline => 'Offline',
+  };
+}
 
 class HomeScreen extends StatefulWidget {
   final AuthService authService;
@@ -38,8 +39,12 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isConnected = true;
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
 
-  List<HistoryEntry>? _offlineRecent;
-  List<InferenceResponse>? _onlineRecent;
+  /// Remembers the last mode explicitly picked from the long-press sheet
+  /// (or the default "Automatic") so the main button reuses it on every
+  /// subsequent tap instead of always falling back to Automatic. Kept as
+  /// in-memory state for the lifetime of the screen; wire this into
+  /// [SettingsService] if it should also survive app restarts.
+  _ScanMode _selectedMode = _ScanMode.automatic;
 
   @override
   void initState() {
@@ -47,7 +52,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _initConnectivity();
     _connectivitySubscription =
         Connectivity().onConnectivityChanged.listen(_updateConnectionStatus);
-    _loadRecentScans();
   }
 
   @override
@@ -68,44 +72,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _isConnected =
           !results.contains(ConnectivityResult.none) || results.length > 1;
     });
-    _loadRecentScans();
   }
 
   void _refresh() {
     setState(() {});
-    _loadRecentScans();
-  }
-
-  // ── Recent scans ───────────────────────────────────────────────────────
-  // Shows a combined, latest-first feed of offline + online scans when
-  // signed in and connected (online history isn't reachable otherwise);
-  // falls back to offline-only scans when either condition isn't met.
-  Future<void> _loadRecentScans() async {
-    final offline = await HistoryService().load();
-    if (mounted) setState(() => _offlineRecent = offline);
-
-    if (widget.authService.isLoggedIn && _isConnected) {
-      try {
-        final online = await widget.apiClient.getHistory(
-          widget.authService.token!,
-        );
-        if (mounted) setState(() => _onlineRecent = online);
-      } catch (_) {
-        if (mounted) setState(() => _onlineRecent = []);
-      }
-    } else if (mounted) {
-      setState(() => _onlineRecent = null);
-    }
-  }
-
-  List<_RecentItem> get _recentItems {
-    final items = <_RecentItem>[
-      ...(_offlineRecent ?? []).map(_RecentItem.offline),
-      if (widget.authService.isLoggedIn && _isConnected)
-        ...(_onlineRecent ?? []).map(_RecentItem.online),
-    ];
-    items.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    return items.take(10).toList();
   }
 
   // ── Navigation ─────────────────────────────────────────────────────────
@@ -130,7 +100,10 @@ class _HomeScreenState extends State<HomeScreen> {
           authService: widget.authService,
           apiClient: widget.apiClient,
           settingsService: widget.settingsService,
-          autoStart: true,
+          // Online mode needs to stop here so the person can choose
+          // Single vs Batch before anything is captured — unlike offline,
+          // which has no such choice to make.
+          autoStart: false,
         ),
       ),
     );
@@ -166,8 +139,22 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _onScanButtonTap() => _startAutomatic();
+  /// Runs whichever mode is currently selected (defaults to Automatic,
+  /// or whatever was last chosen from the long-press sheet).
+  Future<void> _onScanButtonTap() async {
+    switch (_selectedMode) {
+      case _ScanMode.automatic:
+        return _startAutomatic();
+      case _ScanMode.online:
+        return _startOnline();
+      case _ScanMode.offline:
+        return _startOffline();
+    }
+  }
 
+  /// Long-press only changes which mode is selected — it never starts a
+  /// scan itself. Capture only ever starts from the main button
+  /// ([_onScanButtonTap]), using whatever mode is currently selected.
   Future<void> _onScanButtonLongPress() async {
     final choice = await showModalBottomSheet<_ScanMode>(
       context: context,
@@ -175,20 +162,13 @@ class _HomeScreenState extends State<HomeScreen> {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.lg)),
       ),
-      builder: (_) => _ScanModeSheet(isConnected: _isConnected),
+      builder: (_) => _ScanModeSheet(
+        isConnected: _isConnected,
+        selected: _selectedMode,
+      ),
     );
     if (choice == null || !mounted) return;
-    switch (choice) {
-      case _ScanMode.automatic:
-        _startAutomatic();
-        break;
-      case _ScanMode.online:
-        _startOnline();
-        break;
-      case _ScanMode.offline:
-        _startOffline();
-        break;
-    }
+    setState(() => _selectedMode = choice);
   }
 
   Future<void> _onSignInTap() async {
@@ -216,158 +196,74 @@ class _HomeScreenState extends State<HomeScreen> {
     ),
   ).then((_) => _refresh());
 
-  void _openOfflineEntry(HistoryEntry entry) {
-    final file = File(entry.imagePath);
-    if (!file.existsSync()) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Image file no longer exists')),
-      );
-      return;
-    }
-    final detections = entry.annotations.map((a) {
-      return Detection(
-        x1: (a['x1'] as num).toDouble(),
-        y1: (a['y1'] as num).toDouble(),
-        x2: (a['x2'] as num).toDouble(),
-        y2: (a['y2'] as num).toDouble(),
-        confidence: 1.0,
-        classId: (a['class_id'] as num).toInt(),
-      );
-    }).toList();
-    final lines = LineReconstructor.reconstruct(detections);
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ResultScreen(
-          imageFile: file,
-          detections: detections,
-          lines: lines,
-          initialLanguage: BrailleLanguage.english,
-          cachedText: entry.text,
-          apiClient: widget.apiClient,
-          authService: widget.authService,
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openOnlineEntry(InferenceResponse entry) async {
-    try {
-      final token = widget.authService.token!;
-      final file = await widget.apiClient.downloadImage(token, entry.imageId);
-      final detections = entry.annotations.map((a) {
-        return Detection(
-          x1: a.x1,
-          y1: a.y1,
-          x2: a.x2,
-          y2: a.y2,
-          confidence: 1.0,
-          classId: a.classId,
-        );
-      }).toList();
-      final lines = LineReconstructor.reconstruct(detections);
-      if (!mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ResultScreen(
-            imageFile: file,
-            detections: detections,
-            lines: lines,
-            initialLanguage: BrailleLanguage.english,
-            cachedText: entry.extractedText,
-            uploadedImageId: entry.imageId,
-            apiClient: widget.apiClient,
-            authService: widget.authService,
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Could not load image: $e')));
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final user = widget.authService.currentUser;
 
     return Scaffold(
-      body: Stack(
-        children: [
-          SafeArea(
-            bottom: false,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.lg,
-                0,
-                AppSpacing.lg,
-                140, // leaves room so content isn't hidden by the peeking sheet
-              ),
-              child: Column(
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            0,
+            AppSpacing.lg,
+            AppSpacing.xl,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: AppSpacing.xl),
+              Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SizedBox(height: AppSpacing.xl),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(child: _BrandHeader()),
-                      IconButton(
-                        icon: Icon(
-                          Icons.settings_outlined,
-                          size: 20,
-                          color: context.textMuted,
-                        ),
-                        tooltip: 'Settings',
-                        onPressed: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => SettingsScreen(
-                              settingsService: widget.settingsService,
-                            ),
-                          ),
+                  Expanded(child: _BrandHeader()),
+                  IconButton(
+                    icon: Icon(
+                      Icons.settings_outlined,
+                      size: 20,
+                      color: context.textMuted,
+                    ),
+                    tooltip: 'Settings',
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => SettingsScreen(
+                          settingsService: widget.settingsService,
                         ),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Making braille accessible',
-                    style: context.text.bodyMedium,
-                    semanticsLabel: 'Making braille accessible',
-                  ),
-                  const SizedBox(height: 12),
-                  user != null
-                      ? _UserChip(username: user.username, onLogout: _onLogout)
-                      : _SignInButton(onTap: _onSignInTap),
-                  const SizedBox(height: AppSpacing.xl),
-                  // const Center(child: _CaptureIllustrationPlaceholder()),
-                  const SizedBox(height: AppSpacing.lg),
-                  _MainScanButton(
-                    onTap: _onScanButtonTap,
-                    onLongPress: _onScanButtonLongPress,
-                  ),
-                  const SizedBox(height: 8),
-                  Center(
-                    child: Text(
-                      'Hold to switch mode: Automatic, Online or Offline',
-                      style: context.text.bodyMedium?.copyWith(fontSize: 12),
                     ),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 4),
+              Text(
+                'Making braille accessible',
+                style: context.text.bodyMedium,
+                semanticsLabel: 'Making braille accessible',
+              ),
+              const SizedBox(height: 12),
+              user != null
+                  ? _UserChip(username: user.username, onLogout: _onLogout)
+                  : _SignInButton(onTap: _onSignInTap),
+              const SizedBox(height: AppSpacing.xl),
+              // const Center(child: _CaptureIllustrationPlaceholder()),
+              const SizedBox(height: AppSpacing.lg),
+              _MainScanButton(
+                onTap: _onScanButtonTap,
+                onLongPress: _onScanButtonLongPress,
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: Text(
+                  'Mode: ${_selectedMode.label} · Hold to change',
+                  style: context.text.bodyMedium?.copyWith(fontSize: 12),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              _ScanHistoryButton(onTap: _onHistoryTap),
+            ],
           ),
-          _RecentScansSheet(
-            items: _recentItems,
-            onSeeHistory: _onHistoryTap,
-            onTapOffline: _openOfflineEntry,
-            onTapOnline: _openOnlineEntry,
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -556,7 +452,8 @@ class _MainScanButton extends StatelessWidget {
 
 class _ScanModeSheet extends StatelessWidget {
   final bool isConnected;
-  const _ScanModeSheet({required this.isConnected});
+  final _ScanMode selected;
+  const _ScanModeSheet({required this.isConnected, required this.selected});
 
   @override
   Widget build(BuildContext context) {
@@ -579,6 +476,7 @@ class _ScanModeSheet extends StatelessWidget {
               title: 'Automatic',
               subtitle:
                   'Uses the server when signed in & online, otherwise reads on-device',
+              selected: selected == _ScanMode.automatic,
               onTap: () => Navigator.pop(context, _ScanMode.automatic),
             ),
             _ModeOption(
@@ -588,12 +486,14 @@ class _ScanModeSheet extends StatelessWidget {
               title: 'Online',
               subtitle: 'Server-side reading — faster, supports multiple images',
               enabled: isConnected,
+              selected: selected == _ScanMode.online,
               onTap: () => Navigator.pop(context, _ScanMode.online),
             ),
             _ModeOption(
               icon: Icons.phone_android_outlined,
               title: 'Offline',
               subtitle: 'On-device reading — private, works without internet',
+              selected: selected == _ScanMode.offline,
               onTap: () => Navigator.pop(context, _ScanMode.offline),
             ),
           ],
@@ -608,6 +508,7 @@ class _ModeOption extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool enabled;
+  final bool selected;
   final VoidCallback onTap;
 
   const _ModeOption({
@@ -616,6 +517,7 @@ class _ModeOption extends StatelessWidget {
     required this.subtitle,
     required this.onTap,
     this.enabled = true,
+    this.selected = false,
   });
 
   @override
@@ -627,240 +529,52 @@ class _ModeOption extends StatelessWidget {
         leading: Icon(icon, color: context.accent),
         title: Text(title, style: context.text.titleMedium),
         subtitle: Text(subtitle, style: context.text.bodyMedium),
+        trailing: selected
+            ? Icon(Icons.check_circle_rounded, color: context.accent, size: 20)
+            : null,
+        selected: selected,
         onTap: enabled ? onTap : null,
       ),
     );
   }
 }
 
-/// A single recent scan, normalised from either the local offline history
-/// store or the server's inference history.
-class _RecentItem {
-  final DateTime timestamp;
-  final bool isOnline;
-  final HistoryEntry? offline;
-  final InferenceResponse? online;
-
-  const _RecentItem._({
-    required this.timestamp,
-    required this.isOnline,
-    this.offline,
-    this.online,
-  });
-
-  factory _RecentItem.offline(HistoryEntry e) =>
-      _RecentItem._(timestamp: e.timestamp, isOnline: false, offline: e);
-
-  factory _RecentItem.online(InferenceResponse e) =>
-      _RecentItem._(timestamp: e.createdAt, isOnline: true, online: e);
-
-  String get preview =>
-      (isOnline ? online!.extractedText : offline!.text).replaceAll('\n', ' ');
-}
-
-/// A persistent, always-present bottom sheet — pre-slid open just enough to
-/// show a drag handle, the "Recent scans" title, and a hint of the top
-/// entry. Drag it up to see the full list; drag back down to tuck it away.
-class _RecentScansSheet extends StatelessWidget {
-  final List<_RecentItem> items;
-  final VoidCallback onSeeHistory;
-  final ValueChanged<HistoryEntry> onTapOffline;
-  final ValueChanged<InferenceResponse> onTapOnline;
-
-  static const double _peek = 0.16;
-  static const double _expanded = 0.62;
-
-  const _RecentScansSheet({
-    required this.items,
-    required this.onSeeHistory,
-    required this.onTapOffline,
-    required this.onTapOnline,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return DraggableScrollableSheet(
-      initialChildSize: _peek,
-      minChildSize: _peek,
-      maxChildSize: _expanded,
-      snap: true,
-      snapSizes: const [_peek, _expanded],
-      builder: (context, scrollController) {
-        return Container(
-          decoration: BoxDecoration(
-            color: context.bgSurface,
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(AppRadius.xl),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(context.isDark ? 0.3 : 0.08),
-                blurRadius: 16,
-                offset: const Offset(0, -4),
-              ),
-            ],
-          ),
-          // Everything — handle, header, and rows — lives in ONE scrollable
-          // tied to `scrollController`. DraggableScrollableSheet only grows
-          // or shrinks in response to drags on its scrollable content, so if
-          // the handle/header were built outside the list (e.g. in a fixed
-          // Column above an Expanded ListView), dragging them would do
-          // nothing — only the list area would respond. Putting everything
-          // in one ListView means you can drag from anywhere on the sheet.
-          child: ListView(
-            controller: scrollController,
-            padding: EdgeInsets.zero,
-            children: [
-              const SizedBox(height: 10),
-              Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: context.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  AppSpacing.lg,
-                  AppSpacing.sm,
-                  AppSpacing.lg,
-                  AppSpacing.sm,
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Recent scans',
-                        style: context.text.titleLarge,
-                      ),
-                    ),
-                    GestureDetector(
-                      onTap: onSeeHistory,
-                      child: Text(
-                        'See History',
-                        style: context.text.bodyMedium?.copyWith(
-                          color: context.accent,
-                          decoration: TextDecoration.underline,
-                          decorationColor: context.accent.withOpacity(0.5),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (items.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg,
-                  ),
-                  child: Text(
-                    'No scans yet — your recent reads will show up here',
-                    style: context.text.bodyMedium,
-                  ),
-                )
-              else
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.lg,
-                    0,
-                    AppSpacing.lg,
-                    AppSpacing.lg,
-                  ),
-                  child: Column(
-                    children: [
-                      for (int i = 0; i < items.length; i++) ...[
-                        if (i > 0) const SizedBox(height: 10),
-                        _RecentScanRow(
-                          item: items[i],
-                          onTap: () => items[i].isOnline
-                              ? onTapOnline(items[i].online!)
-                              : onTapOffline(items[i].offline!),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _RecentScanRow extends StatelessWidget {
-  final _RecentItem item;
+/// Themed secondary CTA replacing the old always-open "recent scans" sheet;
+/// opens the full [HistoryScreen] instead.
+class _ScanHistoryButton extends StatelessWidget {
   final VoidCallback onTap;
-  const _RecentScanRow({required this.item, required this.onTap});
+  const _ScanHistoryButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final hasText = item.preview.trim().isNotEmpty;
     return Semantics(
       button: true,
-      label: '${item.isOnline ? 'Online' : 'Offline'} scan. '
-          '${hasText ? item.preview : 'No text detected'}',
+      label: 'Scan history',
       child: GestureDetector(
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.all(12),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
             color: context.bgSurfaceHigh,
             borderRadius: BorderRadius.circular(AppRadius.md),
             border: Border.all(color: context.border),
           ),
           child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                item.isOnline
-                    ? Icons.cloud_outlined
-                    : Icons.phone_android_outlined,
-                size: 18,
-                color: context.textMuted,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      hasText ? item.preview : 'No text detected',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: context.text.bodyMedium?.copyWith(
-                        color: context.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _formatShortTime(item.timestamp),
-                      style: context.text.bodyMedium?.copyWith(fontSize: 11),
-                    ),
-                  ],
+              Icon(Icons.history_rounded, size: 18, color: context.textMuted),
+              const SizedBox(width: 8),
+              Text(
+                'Scan History',
+                style: context.text.labelLarge?.copyWith(
+                  color: context.textPrimary,
                 ),
-              ),
-              Icon(
-                Icons.arrow_forward_ios_rounded,
-                size: 12,
-                color: context.textMuted,
               ),
             ],
           ),
         ),
       ),
     );
-  }
-
-  String _formatShortTime(DateTime dt) {
-    final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inDays == 0) {
-      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    }
-    if (diff.inDays == 1) return 'Yesterday';
-    return '${dt.day}/${dt.month}';
   }
 }

@@ -28,25 +28,68 @@ class DocumentScanner {
     required bool autoRotate,
     bool allowGallery = true,
   }) async {
-    if (autoCrop || autoRotate) {
-      return _scanWithCunningScanner(allowGallery: allowGallery);
-    }
-    return _captureWithSimpleCamera(context, allowGallery: allowGallery);
+    final pages = await scanMultiple(
+      context: context,
+      autoCrop: autoCrop,
+      autoRotate: autoRotate,
+      allowGallery: allowGallery,
+      maxPages: 1,
+    );
+    return pages.isEmpty ? null : pages.first;
   }
 
-  static Future<String?> _scanWithCunningScanner({
+  /// Scans up to [maxPages] pages in a single session and returns all the
+  /// file paths collected.
+  ///
+  /// When the cunning scanner is in play (autoCrop or autoRotate enabled),
+  /// this hands `maxPages` straight to `noOfPages` so the native scan UI
+  /// itself handles "capture another page" / "import another from gallery"
+  /// — no manual looping needed on our side. When both settings are off we
+  /// fall back to [SimpleCameraScreen], which only captures one page per
+  /// call, so the caller (see `_scanPages` in online_capture_screen.dart)
+  /// still needs to loop for that path.
+  static Future<List<String>> scanMultiple({
+    required BuildContext context,
+    required bool autoCrop,
+    required bool autoRotate,
+    bool allowGallery = true,
+    int maxPages = 1,
+  }) async {
+    if (autoCrop || autoRotate) {
+      return _scanWithCunningScanner(
+        allowGallery: allowGallery,
+        maxPages: maxPages,
+      );
+    }
+    final path = await _captureWithSimpleCamera(
+      context,
+      allowGallery: allowGallery,
+    );
+    return path == null ? [] : [path];
+  }
+
+  /// True when [scanMultiple] can capture more than one page natively in a
+  /// single session for the given settings — i.e. the caller doesn't need
+  /// to loop/re-invoke itself to build up a batch.
+  static bool supportsNativeMultiPage({
+    required bool autoCrop,
+    required bool autoRotate,
+  }) => autoCrop || autoRotate;
+
+  static Future<List<String>> _scanWithCunningScanner({
     required bool allowGallery,
+    required int maxPages,
   }) async {
     try {
       final pictures = await CunningDocumentScanner.getPictures(
-        noOfPages: 1,
+        noOfPages: maxPages,
         isGalleryImportAllowed: allowGallery,
         mode: ScannerMode.base,
       );
-      if (pictures == null || pictures.isEmpty) return null;
-      return pictures.first;
+      if (pictures == null || pictures.isEmpty) return [];
+      return pictures;
     } catch (_) {
-      return null;
+      return [];
     }
   }
 
