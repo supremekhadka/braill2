@@ -4,7 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 class InferenceRequest(BaseModel):
     image_id: UUID
-    lang: Optional[Literal["en", "np"]] = Field(default="en")
+    lang: Optional[Literal["en", "np", "unicode"]] = Field(default="en")
 class Annotations(BaseModel):
     class_id: int
     x1: float
@@ -21,7 +21,7 @@ class InferenceResponse(BaseModel):
     created_at: datetime
 class BatchInferenceRequest(BaseModel):
     image_ids: list[UUID]
-    lang: str
+    lang: Optional[Literal["en", "np", "unicode"]] = Field(default="en")
  
  
 class BatchInferenceResultItem(InferenceResponse):

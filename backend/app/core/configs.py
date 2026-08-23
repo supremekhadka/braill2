@@ -1,10 +1,13 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class InferenceConfig:
-    ALLOWED_LANGS = {"en", "np"}
+    ALLOWED_LANGS = {"en", "np", "unicode"}
 
     NEPALI_LABEL_MAP = "configs/nepali_braille.yaml"
+    UNICODE_LABEL_MAP = "configs/unicode.yaml"
+
     BATCH_SIZE = 10
+
     BASE_CONFIG = {
         "model": "weights/deployment/yolo26n/finetuned/best_finetuned_mAP_96_1.pt",
         "slice_size": 640,
@@ -20,6 +23,8 @@ class InferenceConfig:
 
         if lang == "np":
             cfg["label_map"] = InferenceConfig.NEPALI_LABEL_MAP
+        elif lang == "unicode":
+            cfg["label_map"] = InferenceConfig.UNICODE_LABEL_MAP
 
         return cfg
 
