@@ -3,84 +3,40 @@ import 'package:image/image.dart' as img;
 import 'tflite_service.dart';
 
 class SahiInference {
-  // ── Tunable parameters ─────────────────────────────────────────────────────
-  /// Number of tile columns and rows to divide the image into.
-  /// The actual tile size is derived at runtime from the image dimensions,
-  /// so it adapts to any resolution without manual tuning.
   static const int numTilesX = 3;
   static const int numTilesY = 3;
-  /// Fractional overlap between adjacent tiles (SAHI default: 0.2).
   static const double overlapHeightRatio = 0.15;
   static const double overlapWidthRatio = 0.15;
-  /// IoU threshold used by the NMS postprocessor (SAHI default: 0.5).
   static const double nmsIouThreshold = 0.35;
 
   final TfliteService _service;
 
-  /// The per-detection confidence threshold actually lives on [TfliteService]
-  /// (it's applied per-tile, before NMS ever sees the detections). This
-  /// constructor forwards an optional [confThreshold] straight to the
-  /// injected service so callers can configure both from one place — e.g.
-  /// `SahiInference(TfliteService(), confThreshold: settingsService.confThreshold)`.
   SahiInference(this._service, {double? confThreshold}) {
     if (confThreshold != null) {
       _service.updateConfidenceThreshold(confThreshold);
     }
   }
 
-  /// Updates the confidence threshold on the underlying [TfliteService].
-  /// Call this whenever `SettingsService.confThreshold` changes (e.g. from
-  /// the Developer options slider) so the next [runSahi] call picks it up —
-  /// no need to reconstruct either object.
   void updateConfidenceThreshold(double value) {
     _service.updateConfidenceThreshold(value);
   }
 
-  // ── Entry point ────────────────────────────────────────────────────────────
-  /// Runs SAHI sliced inference on [image] and returns deduplicated detections
-  /// in **normalised coordinates** of the original image.
   Future<List<Detection>> runSahi(img.Image image) async {
-    final all = <_RawDetection>[];
-    // 1. Tiled prediction passes.
+    final all = <Detection>[];
     final sliceBboxes = _getSliceBboxes(image.width, image.height);
     for (final bbox in sliceBboxes) {
       final xMin = bbox[0], yMin = bbox[1], xMax = bbox[2], yMax = bbox[3];
-      final cropped = img.copyCrop(
-        image,
-        x: xMin,
-        y: yMin,
-        width: xMax - xMin,
-        height: yMax - yMin,
-      );
+      final cropped = img.copyCrop(image, x: xMin, y: yMin, width: xMax - xMin, height: yMax - yMin);
       for (final d in await _service.runInference(cropped)) {
-        all.add(
-          _RawDetection.fromCrop(
-            d,
-            xMin,
-            yMin,
-            xMax,
-            yMax,
-            image.width,
-            image.height,
-          ),
-        );
+        all.add(_mapToFullImage(d, xMin, yMin, xMax, yMax, image.width, image.height));
       }
     }
-    // 2. NMS postprocessing across all collected detections.
-    return _nms(all);
+    return nms(all);
   }
 
-  // ---------------------------------------------------------------------------
-  // Slice coordinate generation
-  // ---------------------------------------------------------------------------
-  /// Returns a list of [xMin, yMin, xMax, yMax] bounding boxes (pixel coords)
-  /// that tile [imgW]×[imgH] into exactly [numTilesX] × [numTilesY] windows
-  /// with the configured fractional overlap.
   List<List<int>> _getSliceBboxes(int imgW, int imgH) {
-    final sliceW = (imgW / (numTilesX - (numTilesX - 1) * overlapWidthRatio))
-        .ceil();
-    final sliceH = (imgH / (numTilesY - (numTilesY - 1) * overlapHeightRatio))
-        .ceil();
+    final sliceW = (imgW / (numTilesX - (numTilesX - 1) * overlapWidthRatio)).ceil();
+    final sliceH = (imgH / (numTilesY - (numTilesY - 1) * overlapHeightRatio)).ceil();
     final xOverlap = (sliceW * overlapWidthRatio).round();
     final yOverlap = (sliceH * overlapHeightRatio).round();
     final stepX = sliceW - xOverlap;
@@ -92,8 +48,6 @@ class SahiInference {
         int yMin = row * stepY;
         int xMax = xMin + sliceW;
         int yMax = yMin + sliceH;
-        // Clamp to image bounds and pull back the start so tiles stay
-        // full-sized (mirrors SAHI's edge adjustment).
         if (xMax > imgW) {
           xMax = imgW;
           xMin = max(0, imgW - sliceW);
@@ -108,74 +62,12 @@ class SahiInference {
     return sliceBboxes;
   }
 
-  // ---------------------------------------------------------------------------
-  // NMS postprocessing
-  // ---------------------------------------------------------------------------
-  List<Detection> _nms(List<_RawDetection> dets) {
-    dets.sort((a, b) => b.confidence.compareTo(a.confidence));
-    final suppressed = List.filled(dets.length, false);
-    final kept = <_RawDetection>[];
-    for (int i = 0; i < dets.length; i++) {
-      if (suppressed[i]) continue;
-      kept.add(dets[i]);
-      for (int j = i + 1; j < dets.length; j++) {
-        if (!suppressed[j] && _iou(dets[i], dets[j]) >= nmsIouThreshold) {
-          suppressed[j] = true;
-        }
-      }
-    }
-    return kept
-        .map(
-          (d) => Detection(
-            x1: d.x1,
-            y1: d.y1,
-            x2: d.x2,
-            y2: d.y2,
-            confidence: d.confidence,
-            classId: d.classId,
-          ),
-        )
-        .toList();
-  }
-
-  static double _iou(_RawDetection a, _RawDetection b) {
-    final iw = min(a.x2, b.x2) - max(a.x1, b.x1);
-    final ih = min(a.y2, b.y2) - max(a.y1, b.y1);
-    if (iw <= 0 || ih <= 0) return 0.0;
-    final inter = iw * ih;
-    final aArea = (a.x2 - a.x1) * (a.y2 - a.y1);
-    final bArea = (b.x2 - b.x1) * (b.y2 - b.y1);
-    return inter / (aArea + bArea - inter);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Internal data types
-// ---------------------------------------------------------------------------
-class _RawDetection {
-  final double x1, y1, x2, y2, confidence;
-  final int classId;
-  const _RawDetection({
-    required this.x1,
-    required this.y1,
-    required this.x2,
-    required this.y2,
-    required this.confidence,
-    required this.classId,
-  });
-
-  factory _RawDetection.fromCrop(
-    Detection d,
-    int xMin,
-    int yMin,
-    int xMax,
-    int yMax,
-    int imgW,
-    int imgH,
+  static Detection _mapToFullImage(
+    Detection d, int xMin, int yMin, int xMax, int yMax, int imgW, int imgH,
   ) {
     final cw = (xMax - xMin).toDouble();
     final ch = (yMax - yMin).toDouble();
-    return _RawDetection(
+    return Detection(
       x1: ((xMin + d.x1 * cw) / imgW).clamp(0.0, 1.0),
       y1: ((yMin + d.y1 * ch) / imgH).clamp(0.0, 1.0),
       x2: ((xMin + d.x2 * cw) / imgW).clamp(0.0, 1.0),
@@ -183,5 +75,33 @@ class _RawDetection {
       confidence: d.confidence,
       classId: d.classId,
     );
+  }
+
+  /// Greedy NMS over already-normalised detections. Public so UT-5 style
+  /// tests can exercise dedup logic without loading a real model.
+  static List<Detection> nms(List<Detection> dets, {double iouThreshold = nmsIouThreshold}) {
+    final sorted = List<Detection>.from(dets)..sort((a, b) => b.confidence.compareTo(a.confidence));
+    final suppressed = List.filled(sorted.length, false);
+    final kept = <Detection>[];
+    for (int i = 0; i < sorted.length; i++) {
+      if (suppressed[i]) continue;
+      kept.add(sorted[i]);
+      for (int j = i + 1; j < sorted.length; j++) {
+        if (!suppressed[j] && _iou(sorted[i], sorted[j]) >= iouThreshold) {
+          suppressed[j] = true;
+        }
+      }
+    }
+    return kept;
+  }
+
+  static double _iou(Detection a, Detection b) {
+    final iw = min(a.x2, b.x2) - max(a.x1, b.x1);
+    final ih = min(a.y2, b.y2) - max(a.y1, b.y1);
+    if (iw <= 0 || ih <= 0) return 0.0;
+    final inter = iw * ih;
+    final aArea = (a.x2 - a.x1) * (a.y2 - a.y1);
+    final bArea = (b.x2 - b.x1) * (b.y2 - b.y1);
+    return inter / (aArea + bArea - inter);
   }
 }
