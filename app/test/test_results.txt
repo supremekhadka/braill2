@@ -1,0 +1,17 @@
+00:00 +0: loading /var/home/supremekhadka/Projects/braill2/mobile-app/test/line_reconstructor_test.dart
+00:00 +0: /var/home/supremekhadka/Projects/braill2/mobile-app/test/line_reconstructor_test.dart: ST-6: single line, two words reconstructed in order
+00:00 +1: /var/home/supremekhadka/Projects/braill2/mobile-app/test/line_reconstructor_test.dart: ST-6: two vertically separated rows become two lines
+00:00 +2: /var/home/supremekhadka/Projects/braill2/mobile-app/test/line_reconstructor_test.dart: ST-6: empty input returns no lines
+00:00 +3: /var/home/supremekhadka/Projects/braill2/mobile-app/test/braille_mappings_test.dart: ST-7: English mapping produces expected characters
+00:00 +4: /var/home/supremekhadka/Projects/braill2/mobile-app/test/braille_mappings_test.dart: ST-7: Nepali mapping produces expected characters
+00:00 +5: /var/home/supremekhadka/Projects/braill2/mobile-app/test/braille_mappings_test.dart: ST-7: Unicode mapping falls back to braille codepoint
+00:00 +6: /var/home/supremekhadka/Projects/braill2/mobile-app/test/braille_mappings_test.dart: ST-7: caps indicator capitalizes next English letter
+00:00 +7: /var/home/supremekhadka/Projects/braill2/mobile-app/test/braille_mappings_test.dart: ST-7: number indicator converts English letters to digits
+00:00 +8: /var/home/supremekhadka/Projects/braill2/mobile-app/test/history_service_test.dart: ST-9: saved entry appears in history, newest first
+00:00 +9: /var/home/supremekhadka/Projects/braill2/mobile-app/test/history_service_test.dart: ST-9: delete removes the matching entry
+00:00 +10: /var/home/supremekhadka/Projects/braill2/mobile-app/test/api_client_test.dart: ST-2: login returns token on 200
+00:00 +11: /var/home/supremekhadka/Projects/braill2/mobile-app/test/api_client_test.dart: ST-2: login throws ApiException on 401
+00:00 +12: /var/home/supremekhadka/Projects/braill2/mobile-app/test/api_client_test.dart: ST-3: uploadImage returns an image id
+00:00 +13: /var/home/supremekhadka/Projects/braill2/mobile-app/test/api_client_test.dart: ST-5: predict returns extracted text and annotations
+00:00 +14: /var/home/supremekhadka/Projects/braill2/mobile-app/test/api_client_test.dart: ST-5: predictBatch returns one result per image
+00:00 +15: All tests passed!

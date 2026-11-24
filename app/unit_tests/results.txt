@@ -1,0 +1,11 @@
+00:00 +0: loading /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/offline_inference_pipeline_test.dart
+00:00 +0: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/offline_inference_pipeline_test.dart: UT-4: pipeline runs inference on every tile and returns detections
+00:00 +1: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/offline_inference_pipeline_test.dart: UT-4: no detections from the model yields no output
+00:00 +2: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/detection_postprocessing_test.dart: UT-5: overlapping detections collapse to the highest-confidence one
+00:00 +3: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/detection_postprocessing_test.dart: UT-5: non-overlapping detections are all preserved
+00:00 +4: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/detection_postprocessing_test.dart: UT-5: empty input returns empty output
+00:00 +5: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/text_construction_test.dart: UT-6: cells are ordered into lines and words correctly
+00:00 +6: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/text_construction_test.dart: UT-6: reconstructed cells convert to readable English text
+00:00 +7: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/text_construction_test.dart: UT-6: reconstructed cells convert to readable Nepali text
+00:00 +8: /var/home/supremekhadka/Projects/braill2/mobile-app/unit_tests/text_construction_test.dart: UT-6: rows separated vertically become separate lines in order
+00:00 +9: All tests passed!
