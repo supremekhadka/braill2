@@ -29,6 +29,12 @@ class TfliteService {
   /// manually since this file has no dependency on the settings layer.
   static const double defaultConfidenceThreshold = 0.5;
 
+  /// iOS bring-up switch. Start with `false` (CPU) to confirm the rest of
+  /// the pipeline works on iOS, then flip to `true` to try the Metal GPU
+  /// delegate. A native Metal failure can crash the app instead of throwing,
+  /// so the try/catch below is not a guaranteed safety net on iOS.
+  static const bool useGpuOnIos = false;
+
   /// Minimum confidence a raw detection needs to survive [_parseOutput].
   /// Mutable (not `final`) so it can be updated at runtime from
   /// `SettingsService.confThreshold` via [updateConfidenceThreshold]
@@ -55,18 +61,33 @@ class TfliteService {
     const asset = 'assets/models/best_float32.tflite';
     // const asset = 'assets/models/best_finetuned_mAP_96_1_float16.tflite';
     // const asset = 'assets/models/best_finetuned_mAP_95_9_float16.tflite';
-    try {
-      final opts = InterpreterOptions()..addDelegate(GpuDelegate());
-      _interpreter = await Interpreter.fromAsset(asset, options: opts);
-      _activeBackend = InferenceBackend.gpu;
-    } catch (_) {}
-    if (_interpreter == null && Platform.isAndroid) {
+
+    if (Platform.isIOS) {
+      // iOS: Metal GPU delegate (opt-in via [useGpuOnIos]), otherwise CPU.
+      // NNAPI doesn't exist on iOS.
+      if (useGpuOnIos) {
+        try {
+          final opts = InterpreterOptions()..addDelegate(GpuDelegate());
+          _interpreter = await Interpreter.fromAsset(asset, options: opts);
+          _activeBackend = InferenceBackend.gpu;
+        } catch (_) {}
+      }
+    } else {
+      // Android (unchanged from the tested behaviour): GPU → NNAPI → CPU.
       try {
-        final opts = InterpreterOptions()..useNnApiForAndroid = true;
+        final opts = InterpreterOptions()..addDelegate(GpuDelegate());
         _interpreter = await Interpreter.fromAsset(asset, options: opts);
-        _activeBackend = InferenceBackend.nnapi;
+        _activeBackend = InferenceBackend.gpu;
       } catch (_) {}
+      if (_interpreter == null && Platform.isAndroid) {
+        try {
+          final opts = InterpreterOptions()..useNnApiForAndroid = true;
+          _interpreter = await Interpreter.fromAsset(asset, options: opts);
+          _activeBackend = InferenceBackend.nnapi;
+        } catch (_) {}
+      }
     }
+
     if (_interpreter == null) {
       _interpreter = await Interpreter.fromAsset(asset);
       _activeBackend = InferenceBackend.cpu;
@@ -152,7 +173,7 @@ class TfliteService {
   Future<List<Detection>> runInferenceFromEncodedBytes(Uint8List bytes) async {
     final image = img.decodeImage(bytes);
     if (image == null) throw Exception('Could not decode image');
-    return runInference(image);
+    return runInference(img.bakeOrientation(image));
   }
 
   Future<List<Detection>> runInferenceFromFile(File file) async {

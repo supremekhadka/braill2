@@ -40,7 +40,13 @@ class BrailleReaderService {
     final bytes = await File(imagePath).readAsBytes();
     final decoded = img.decodeImage(bytes);
     if (decoded == null) throw Exception('Could not decode image');
-    final clamped = clampToFhd(decoded);
+
+    // iPhone photos carry an EXIF rotation flag that `decodeImage` ignores,
+    // while Flutter's Image.file honours it. Bake it into the pixels so the
+    // model and the bounding-box overlay see the same upright image.
+    final oriented = img.bakeOrientation(decoded);
+
+    final clamped = clampToFhd(oriented);
     final detections = await _sahi!.runSahi(clamped);
     final lines = LineReconstructor.reconstruct(detections);
     final text = buildTextFromLines(lines, BrailleLanguage.english);

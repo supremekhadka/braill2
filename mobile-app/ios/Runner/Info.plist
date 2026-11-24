@@ -3,9 +3,22 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Camera is used to scan braille pages</string>
+	<string>Braill. uses the camera to scan braille pages.</string>
+
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Photo library access to select braille images</string>
+	<string>Braill. lets you pick existing photos of braille pages.</string>
+
+	<!-- Needed so http:// to a LAN/localhost dev backend isn't blocked by ATS -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+	<key>NSAllowsLocalNetworking</key>
+	<true/>
+	</dict>
+
+	<!-- Needed on a real device when talking to http://192.168.x.x:8000 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Braill. connects to your development server on the local network.</string>
+
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
@@ -60,15 +73,15 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
+		<!-- <string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string> -->
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<!-- <string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>UIInterfaceOrientationLandscapeRight</string> -->
 	</array>
 </dict>
 </plist>

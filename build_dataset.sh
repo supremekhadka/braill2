@@ -1,1 +1,0 @@
-python -m src.data_builder.main
