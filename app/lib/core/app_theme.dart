@@ -15,6 +15,14 @@ extension AppColors on BuildContext {
   Color get textPrimary => colors.onSurface;
   Color get textMuted => colors.onSurface.withOpacity(0.5);
   Color get textDisabled => colors.onSurface.withOpacity(0.28);
+
+  /// Accessible variants for low-vision users (WCAG: 3:1 for borders and
+  /// icons, 4.5:1 for text). The base `accent` (sage 7B9E87) is only ~2.8:1
+  /// on the light page and `border` (D4C8BE) only ~1.6:1, so controls use
+  /// these instead. In dark mode `accentStrong` is the same colour as
+  /// `accent` (already ~8:1).
+  Color get accentStrong => isDark ? colors.primary : const Color(0xFF4A7258);
+  Color get borderStrong => colors.onSurface.withOpacity(0.55);
 }
 
 class AppRadius {

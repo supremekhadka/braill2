@@ -37,16 +37,21 @@ class BraillApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Braill.',
-      debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.system,
-      theme: _buildTheme(Brightness.light),
-      darkTheme: _buildTheme(Brightness.dark),
-      home: HomeScreen(
-        authService: authService,
-        apiClient: apiClient,
-        settingsService: settingsService,
+    // Rebuilds the whole app when the Theme button on the home screen
+    // changes the mode (System / Light / Dark).
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: settingsService.themeMode,
+      builder: (context, mode, _) => MaterialApp(
+        title: 'Braill.',
+        debugShowCheckedModeBanner: false,
+        themeMode: mode,
+        theme: _buildTheme(Brightness.light),
+        darkTheme: _buildTheme(Brightness.dark),
+        home: HomeScreen(
+          authService: authService,
+          apiClient: apiClient,
+          settingsService: settingsService,
+        ),
       ),
     );
   }
@@ -103,27 +108,27 @@ class BraillApp extends StatelessWidget {
             color: colorScheme.onSurface,
           ),
           titleLarge: GoogleFonts.inter(
-            fontSize: 17,
+            fontSize: 20,
             fontWeight: FontWeight.w600,
             color: colorScheme.onSurface,
           ),
           titleMedium: GoogleFonts.inter(
-            fontSize: 15,
+            fontSize: 17,
             fontWeight: FontWeight.w500,
             color: colorScheme.onSurface,
           ),
           bodyLarge: GoogleFonts.inter(
-            fontSize: 16,
+            fontSize: 18,
             color: colorScheme.onSurface,
             height: 1.6,
           ),
           bodyMedium: GoogleFonts.inter(
-            fontSize: 14,
+            fontSize: 16,
             color: colorScheme.onSurface.withOpacity(0.7),
             height: 1.5,
           ),
           labelLarge: GoogleFonts.inter(
-            fontSize: 14,
+            fontSize: 16,
             fontWeight: FontWeight.w600,
             letterSpacing: 0.3,
             color: colorScheme.onSurface,

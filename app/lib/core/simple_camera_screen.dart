@@ -1,28 +1,22 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 
 import 'camera_a11y.dart';
 
 /// A minimal, self-built camera screen used when neither auto-crop nor
 /// auto-rotate is enabled (see [DocumentScanner]).
 ///
-/// The system camera intent that `image_picker` launches in that case gives
-/// us no control over which lens opens and — on most Android builds — no
-/// gallery button either. This screen fixes both:
-///   - always opens on the rear lens (falls back to whatever camera is
-///     available if a device somehow has no rear sensor)
-///   - always shows a gallery button, regardless of platform quirks
+/// Always opens on the rear lens (falls back to whatever camera is available
+/// if a device somehow has no rear sensor). Controls: shutter (also either
+/// hardware volume button) and a flashlight toggle — nothing else.
 ///
-/// Accessible: large labelled buttons, spoken + haptic feedback, a light
-/// toggle for raking light on embossed braille.
+/// Accessible: large labelled buttons, spoken + haptic feedback. The system
+/// back gesture (or VoiceOver's escape gesture) closes the screen.
 ///
-/// Returns the captured/picked image path via `Navigator.pop`, or `null` if
-/// the person backs out without choosing anything.
+/// Returns the captured image path via `Navigator.pop`, or `null` if the
+/// person backs out.
 class SimpleCameraScreen extends StatefulWidget {
-  final bool allowGallery;
-
-  const SimpleCameraScreen({super.key, this.allowGallery = true});
+  const SimpleCameraScreen({super.key});
 
   @override
   State<SimpleCameraScreen> createState() => _SimpleCameraScreenState();
@@ -34,6 +28,7 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
   bool _busy = false;
   bool _torchOn = false;
   final _feedback = ScanFeedback();
+  final _volume = VolumeShutter();
 
   @override
   void initState() {
@@ -63,7 +58,9 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
         return;
       }
       setState(() => _controller = controller);
-      _feedback.announce('Camera ready. Point at the page, then press Capture.',
+      _volume.start(_capture);
+      _feedback.announce(
+          'Camera ready. Press Capture or a volume button to take the photo.',
           force: true);
     } catch (e) {
       if (mounted) setState(() => _error = 'Could not start the camera: $e');
@@ -72,13 +69,14 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
 
   @override
   void dispose() {
+    _volume.stop();
     _controller?.dispose();
     super.dispose();
   }
 
   Future<void> _capture() async {
     final controller = _controller;
-    if (controller == null || _busy) return;
+    if (controller == null || _busy || !mounted) return;
     setState(() => _busy = true);
     _feedback.success();
     _feedback.announce('Capturing. Hold still.', force: true);
@@ -94,25 +92,6 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
     }
   }
 
-  Future<void> _pickFromGallery() async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      final file = await ImagePicker().pickImage(source: ImageSource.gallery);
-      if (!mounted) return;
-      if (file != null) {
-        Navigator.of(context).pop(file.path);
-      } else {
-        setState(() => _busy = false);
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => _busy = false);
-        _feedback.announce('Could not open the gallery.', force: true);
-      }
-    }
-  }
-
   Future<void> _toggleTorch() async {
     final c = _controller;
     if (c == null) return;
@@ -121,9 +100,9 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
       await c.setFlashMode(next ? FlashMode.torch : FlashMode.off);
       if (!mounted) return;
       setState(() => _torchOn = next);
-      _feedback.announce(next ? 'Light on' : 'Light off', force: true);
+      _feedback.announce(next ? 'Flashlight on' : 'Flashlight off', force: true);
     } catch (_) {
-      _feedback.announce('Light is not available on this camera.', force: true);
+      _feedback.announce('Flashlight is not available on this camera.', force: true);
     }
   }
 
@@ -134,6 +113,7 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
       namesRoute: true,
       label: 'Take a photo',
       explicitChildNodes: true,
+      onDismiss: () => Navigator.of(context).pop(),
       child: Scaffold(
         backgroundColor: Colors.black,
         body: SafeArea(child: _buildBody()),
@@ -156,27 +136,6 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          child: Row(
-            children: [
-              CameraLabeledButton(
-                icon: Icons.close_rounded,
-                label: 'Close',
-                semanticsLabel: 'Close camera',
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-              const Spacer(),
-              CameraLabeledButton(
-                icon: _torchOn ? Icons.flashlight_on : Icons.flashlight_off,
-                label: _torchOn ? 'Light on' : 'Light off',
-                semanticsLabel: 'Light',
-                toggled: _torchOn,
-                onPressed: _toggleTorch,
-              ),
-            ],
-          ),
-        ),
         Expanded(
           child: Semantics(
             label: 'Camera view',
@@ -201,18 +160,17 @@ class _SimpleCameraScreenState extends State<SimpleCameraScreen> {
             children: [
               Expanded(
                 child: Center(
-                  child: widget.allowGallery
-                      ? CameraLabeledButton(
-                          icon: Icons.photo_library_outlined,
-                          label: 'Gallery',
-                          semanticsLabel: 'Choose from gallery',
-                          onPressed: _busy ? null : _pickFromGallery,
-                        )
-                      : const SizedBox.shrink(),
+                  child: CameraLabeledButton(
+                    icon: _torchOn ? Icons.flashlight_on : Icons.flashlight_off,
+                    label: _torchOn ? 'Flashlight on' : 'Flashlight off',
+                    semanticsLabel: 'Flashlight',
+                    toggled: _torchOn,
+                    onPressed: _toggleTorch,
+                  ),
                 ),
               ),
               ShutterButton(busy: _busy, onPressed: _busy ? null : _capture),
-              const Expanded(child: SizedBox.shrink()), // balances the gallery slot
+              const Expanded(child: SizedBox.shrink()), // balances the flashlight slot
             ],
           ),
         ),

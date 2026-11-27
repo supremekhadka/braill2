@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
+import 'package:flutter/services.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../core/app_theme.dart';
+import '../core/document_scanner.dart' show ScanSource;
 import '../services/auth_service.dart';
 import '../services/api_client.dart';
 import '../services/settings_service.dart';
@@ -18,6 +21,13 @@ extension on _ScanMode {
     _ScanMode.automatic => 'Automatic',
     _ScanMode.online => 'Online',
     _ScanMode.offline => 'Offline',
+  };
+
+  String get subtitle => switch (this) {
+    _ScanMode.automatic =>
+      'Uses the server when signed in & online, otherwise reads on-device',
+    _ScanMode.online => 'Server-side reading, faster, supports multiple images',
+    _ScanMode.offline => 'On-device reading, private, works without internet',
   };
 }
 
@@ -39,23 +49,45 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isConnected = true;
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
 
-  /// Remembers the last mode explicitly picked from the long-press sheet
-  /// (or the default "Automatic") so the main button reuses it on every
-  /// subsequent tap instead of always falling back to Automatic. Kept as
+  /// The mode chosen in the "Reading mode" select box (default "Automatic").
+  /// Both the Scan and the Select-from-gallery buttons use it. Kept as
   /// in-memory state for the lifetime of the screen; wire this into
   /// [SettingsService] if it should also survive app restarts.
   _ScanMode _selectedMode = _ScanMode.automatic;
 
+  final _brandFocus = FocusNode(debugLabel: 'brand');
+  final _scanFocus = FocusNode(debugLabel: 'scan');
+  Timer? _entranceTimer;
+
+  /// On entrance: screen-reader focus goes to the app name + slogan (so it is
+  /// read out), then moves on to the Scan button.
+  void _runEntrance() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _brandFocus.requestFocus();
+      _entranceTimer = Timer(const Duration(milliseconds: 3000), () {
+        // Only if the person hasn't already moved on to another screen.
+        if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return;
+        _scanFocus.requestFocus();
+      });
+    });
+  }
+
   @override
   void initState() {
     super.initState();
+    _runEntrance();
     _initConnectivity();
-    _connectivitySubscription =
-        Connectivity().onConnectivityChanged.listen(_updateConnectionStatus);
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
+      _updateConnectionStatus,
+    );
   }
 
   @override
   void dispose() {
+    _entranceTimer?.cancel();
+    _brandFocus.dispose();
+    _scanFocus.dispose();
     _connectivitySubscription.cancel();
     super.dispose();
   }
@@ -67,11 +99,62 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _updateConnectionStatus(List<ConnectivityResult> results) {
     if (!mounted) return;
+    final connected =
+        !results.contains(ConnectivityResult.none) || results.length > 1;
+    final changed = connected != _isConnected;
     setState(() {
       // If the only result is 'none', there is no connection.
-      _isConnected =
-          !results.contains(ConnectivityResult.none) || results.length > 1;
+      _isConnected = connected;
     });
+    if (changed) {
+      _cue(
+        connected
+            ? 'Back online.'
+            : 'You are offline. Online reading is unavailable; use Offline.',
+        warn: !connected,
+      );
+    }
+  }
+
+  /// Spoken + felt confirmation for screen-reader users.
+  void _cue(String message, {bool warn = false}) {
+    warn ? HapticFeedback.heavyImpact() : HapticFeedback.selectionClick();
+    SemanticsService.announce(message, TextDirection.ltr);
+  }
+
+  // ── Theme ──────────────────────────────────────────────────────────────
+
+  ThemeMode get _themeMode => widget.settingsService.themeMode.value;
+
+  static String _themeName(ThemeMode m) => switch (m) {
+    ThemeMode.system => 'System',
+    ThemeMode.light => 'Light',
+    ThemeMode.dark => 'Dark',
+  };
+
+  static IconData _themeIcon(ThemeMode m) => switch (m) {
+    ThemeMode.system => Icons.brightness_auto_rounded,
+    ThemeMode.light => Icons.light_mode_rounded,
+    ThemeMode.dark => Icons.dark_mode_rounded,
+  };
+
+  ThemeMode get _nextTheme => switch (_themeMode) {
+    ThemeMode.system => ThemeMode.light,
+    ThemeMode.light => ThemeMode.dark,
+    ThemeMode.dark => ThemeMode.system,
+  };
+
+  /// System → Light → Dark → System.
+  Future<void> _cycleTheme() async {
+    final next = _nextTheme;
+    await widget.settingsService.setThemeMode(next);
+    if (!mounted) return;
+    setState(() {});
+    _cue(
+      next == ThemeMode.system
+          ? 'Theme set to System. It follows your phone setting.'
+          : 'Theme set to ${_themeName(next)}.',
+    );
   }
 
   void _refresh() {
@@ -80,8 +163,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ── Navigation ─────────────────────────────────────────────────────────
 
-  Future<void> _startOnline() async {
-    if (!_isConnected) return;
+  void _tell(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// [source] is where the image comes from: the camera (Scan button) or the
+  /// gallery (Select from gallery button). Either way the capture screen
+  /// starts straight away — no extra tap.
+  Future<void> _startOnline(ScanSource source) async {
+    if (!_isConnected) {
+      _tell(
+        'No internet connection. Choose Offline or Automatic, '
+        'or try again when you are online.',
+      );
+      return;
+    }
     if (!widget.authService.isLoggedIn) {
       final loggedIn = await Navigator.push<bool>(
         context,
@@ -100,17 +198,15 @@ class _HomeScreenState extends State<HomeScreen> {
           authService: widget.authService,
           apiClient: widget.apiClient,
           settingsService: widget.settingsService,
-          // Online mode needs to stop here so the person can choose
-          // Single vs Batch before anything is captured — unlike offline,
-          // which has no such choice to make.
-          autoStart: false,
+          autoStart: true,
+          source: source,
         ),
       ),
     );
     _refresh();
   }
 
-  Future<void> _startOffline() async {
+  Future<void> _startOffline(ScanSource source) async {
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -120,6 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
           apiClient: widget.apiClient,
           authService: widget.authService,
           autoStart: true,
+          source: source,
         ),
       ),
     );
@@ -128,47 +225,28 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// "Automatic": reads on-device by default (works everywhere, no login
   /// needed), and only reaches for the server when it's actually usable —
-  /// i.e. signed in and online. Long-press the main button to override this
-  /// and pick a mode explicitly.
-  Future<void> _startAutomatic() async {
+  /// i.e. signed in and online. Pick Online or Offline in the select box to
+  /// override this.
+  Future<void> _startAutomatic(ScanSource source) async {
     final canUseOnline = _isConnected && widget.authService.isLoggedIn;
     if (canUseOnline) {
-      await _startOnline();
+      await _startOnline(source);
     } else {
-      await _startOffline();
+      await _startOffline(source);
     }
   }
 
-  /// Runs whichever mode is currently selected (defaults to Automatic,
-  /// or whatever was last chosen from the long-press sheet).
-  Future<void> _onScanButtonTap() async {
+  /// Runs whichever mode is currently selected.
+  Future<void> _start(ScanSource source) {
+    HapticFeedback.selectionClick();
     switch (_selectedMode) {
       case _ScanMode.automatic:
-        return _startAutomatic();
+        return _startAutomatic(source);
       case _ScanMode.online:
-        return _startOnline();
+        return _startOnline(source);
       case _ScanMode.offline:
-        return _startOffline();
+        return _startOffline(source);
     }
-  }
-
-  /// Long-press only changes which mode is selected — it never starts a
-  /// scan itself. Capture only ever starts from the main button
-  /// ([_onScanButtonTap]), using whatever mode is currently selected.
-  Future<void> _onScanButtonLongPress() async {
-    final choice = await showModalBottomSheet<_ScanMode>(
-      context: context,
-      backgroundColor: context.bgSurface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.lg)),
-      ),
-      builder: (_) => _ScanModeSheet(
-        isConnected: _isConnected,
-        selected: _selectedMode,
-      ),
-    );
-    if (choice == null || !mounted) return;
-    setState(() => _selectedMode = choice);
   }
 
   Future<void> _onSignInTap() async {
@@ -178,12 +256,16 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (_) => LoginScreen(authService: widget.authService),
       ),
     );
-    if (loggedIn == true) _refresh();
+    if (loggedIn == true) {
+      _refresh();
+      _cue('Signed in.');
+    }
   }
 
   Future<void> _onLogout() async {
     await widget.authService.logout();
     _refresh();
+    _cue('Signed out.');
   }
 
   Future<void> _onHistoryTap() => Navigator.push(
@@ -201,6 +283,62 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = widget.authService.currentUser;
 
     return Scaffold(
+      bottomNavigationBar: Align(
+        alignment: Alignment.bottomCenter,
+        heightFactor: 1,
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.md,
+              AppSpacing.lg,
+              AppSpacing.md,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: _HeaderButton(
+                        icon: _themeIcon(_themeMode),
+                        label: 'Theme: ${_themeName(_themeMode)}',
+                        semanticsLabel:
+                            'Theme: ${_themeName(_themeMode)}. Double tap to switch to ${_themeName(_nextTheme)}.',
+                        onTap: _cycleTheme,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(
+                      child: _HeaderButton(
+                        icon: Icons.settings_outlined,
+                        label: 'Settings',
+                        semanticsLabel: 'Settings. Double tap to open.',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => SettingsScreen(
+                              settingsService: widget.settingsService,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (user == null) ...[
+                  const SizedBox(height: AppSpacing.md),
+                  SizedBox(
+                    height: 64,
+                    child: _SignInButton(onTap: _onSignInTap),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(
@@ -213,52 +351,26 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: AppSpacing.xl),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: _BrandHeader()),
-                  IconButton(
-                    icon: Icon(
-                      Icons.settings_outlined,
-                      size: 20,
-                      color: context.textMuted,
-                    ),
-                    tooltip: 'Settings',
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => SettingsScreen(
-                          settingsService: widget.settingsService,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Making braille accessible',
-                style: context.text.bodyMedium,
-                semanticsLabel: 'Making braille accessible',
-              ),
-              const SizedBox(height: 12),
-              user != null
-                  ? _UserChip(username: user.username, onLogout: _onLogout)
-                  : _SignInButton(onTap: _onSignInTap),
+              _BrandHeader(focusNode: _brandFocus),
+              if (user != null) ...[
+                const SizedBox(height: 12),
+                _UserChip(username: user.username, onLogout: _onLogout),
+              ],
               const SizedBox(height: AppSpacing.xl),
               // const Center(child: _CaptureIllustrationPlaceholder()),
               const SizedBox(height: AppSpacing.lg),
+              _ModeSelect(
+                value: _selectedMode,
+                isConnected: _isConnected,
+                onChanged: (m) => setState(() => _selectedMode = m),
+              ),
+              const SizedBox(height: AppSpacing.lg),
               _MainScanButton(
-                onTap: _onScanButtonTap,
-                onLongPress: _onScanButtonLongPress,
+                focusNode: _scanFocus,
+                onTap: () => _start(ScanSource.camera),
               ),
-              const SizedBox(height: 8),
-              Center(
-                child: Text(
-                  'Mode: ${_selectedMode.label} · Hold to change',
-                  style: context.text.bodyMedium?.copyWith(fontSize: 12),
-                ),
-              ),
+              const SizedBox(height: AppSpacing.md),
+              _GalleryButton(onTap: () => _start(ScanSource.gallery)),
               const SizedBox(height: AppSpacing.lg),
               _ScanHistoryButton(onTap: _onHistoryTap),
             ],
@@ -270,12 +382,35 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _BrandHeader extends StatelessWidget {
+  final FocusNode focusNode;
+  const _BrandHeader({required this.focusNode});
+
   @override
   Widget build(BuildContext context) {
-    return Text(
-      'Braill.',
-      style: context.text.displayLarge,
-      semanticsLabel: 'Braill.',
+    return SelectionContainer.disabled(
+      child: MergeSemantics(
+        child: Focus(
+          focusNode: focusNode,
+          child: Semantics(
+            container: true,
+            header: true,
+            label: 'BASIC. Braille Accessible Scanner for Inclusive Classroom',
+            child: ExcludeSemantics(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('BASIC', style: context.text.displayLarge),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Braille Accessible Scanner for Inclusive Classroom',
+                    style: context.text.bodyMedium,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -288,27 +423,33 @@ class _SignInButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       button: true,
-      label: 'Sign in',
-      child: GestureDetector(
+      label:
+          'Sign in. Sign in to use the online reading mode and connect to your account.',
+      excludeSemantics: true,
+      onTap: onTap,
+      child: InkWell(
         onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.md),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          width: double.infinity,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
-            color: context.accent.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            border: Border.all(color: context.accent.withOpacity(0.3)),
+            color: context.accentStrong.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: context.accentStrong, width: 2),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.login_rounded, size: 14, color: context.accent),
-              const SizedBox(width: 6),
+              Icon(Icons.login_rounded, size: 26, color: context.accentStrong),
+              const SizedBox(width: 10),
               Text(
                 'Sign in',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: context.accent,
+                style: context.text.labelLarge?.copyWith(
+                  color: context.textPrimary,
+                  fontSize: 18,
                 ),
               ),
             ],
@@ -327,46 +468,101 @@ class _UserChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: context.accent.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            border: Border.all(color: context.accent.withOpacity(0.25)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.person_outline_rounded,
-                size: 14,
-                color: context.accent,
+        Flexible(
+          child: Semantics(
+            label: 'Signed in as $username',
+            excludeSemantics: true,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: context.accentStrong.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                border: Border.all(color: context.accentStrong, width: 1.5),
               ),
-              const SizedBox(width: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.person_outline_rounded,
+                    size: 22,
+                    color: context.accentStrong,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      username,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.text.titleMedium?.copyWith(
+                        color: context.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        _HeaderButton(
+          icon: Icons.logout_rounded,
+          label: 'Log out',
+          semanticsLabel: 'Log out. Double tap to sign out.',
+          onTap: onLogout,
+        ),
+      ],
+    );
+  }
+}
+
+/// Labelled header control: icon over a visible text label, ≥72dp target.
+class _HeaderButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String semanticsLabel;
+  final VoidCallback onTap;
+  const _HeaderButton({
+    required this.icon,
+    required this.label,
+    required this.semanticsLabel,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: semanticsLabel,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        child: Container(
+          constraints: const BoxConstraints(minWidth: 72, minHeight: 72),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          decoration: BoxDecoration(
+            color: context.bgSurface,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: context.borderStrong, width: 1.5),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 28, color: context.textPrimary),
+              const SizedBox(height: 4),
               Text(
-                username,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: context.accent,
+                label,
+                textAlign: TextAlign.center,
+                style: context.text.labelLarge?.copyWith(
+                  color: context.textPrimary,
+                  fontSize: 14,
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(width: 8),
-        GestureDetector(
-          onTap: onLogout,
-          child: Tooltip(
-            message: 'Log out',
-            child: Icon(
-              Icons.logout_rounded,
-              size: 16,
-              color: context.textMuted,
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
@@ -386,7 +582,7 @@ class _UserChip extends StatelessWidget {
 //           decoration: BoxDecoration(
 //             color: context.bgSurfaceHigh,
 //             borderRadius: BorderRadius.circular(AppRadius.xl),
-//             border: Border.all(color: context.border),
+//             border: Border.all(color: context.borderStrong),
 //           ),
 //           child: Icon(
 //             Icons.center_focus_weak_rounded,
@@ -407,39 +603,93 @@ class _UserChip extends StatelessWidget {
 
 class _MainScanButton extends StatelessWidget {
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
+  final FocusNode focusNode;
 
-  const _MainScanButton({required this.onTap, required this.onLongPress});
+  const _MainScanButton({required this.onTap, required this.focusNode});
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
+    return Focus(
+      focusNode: focusNode,
+      child: Semantics(
       button: true,
-      label: 'Scan or upload. Long press for more options.',
+      label: 'Scan. Click to open the camera.',
+      excludeSemantics: true,
+      onTap: onTap,
       child: GestureDetector(
         onTap: onTap,
-        onLongPress: onLongPress,
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 22),
+          constraints: const BoxConstraints(minHeight: 80),
+          padding: const EdgeInsets.symmetric(vertical: 24),
           decoration: BoxDecoration(
-            color: context.accent.withOpacity(0.12),
+            color: context.accentStrong.withOpacity(0.14),
             borderRadius: BorderRadius.circular(AppRadius.lg),
-            border: Border.all(color: context.accent.withOpacity(0.5)),
+            border: Border.all(color: context.accentStrong, width: 2),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
                 Icons.document_scanner_rounded,
-                color: context.accent,
-                size: 24,
+                color: context.accentStrong,
+                size: 30,
               ),
               const SizedBox(width: 12),
               Text(
-                'Scan or Upload',
+                'Scan',
                 style: context.text.labelLarge?.copyWith(
                   color: context.textPrimary,
+                  fontSize: 20,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      ),
+    );
+  }
+}
+
+/// Opens the photo gallery directly; the chosen photo is then cropped to the
+/// page (per the Auto-crop setting) and read.
+class _GalleryButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _GalleryButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Select from gallery. Click to select from your photos.',
+      excludeSemantics: true,
+      onTap: onTap,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          constraints: const BoxConstraints(minHeight: 80),
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          decoration: BoxDecoration(
+            color: context.accentStrong.withOpacity(0.14),
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            border: Border.all(color: context.accentStrong, width: 2),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.photo_library_outlined,
+                color: context.accentStrong,
+                size: 30,
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Select from Gallery',
+                style: context.text.labelLarge?.copyWith(
+                  color: context.textPrimary,
+                  fontSize: 20,
                 ),
               ),
             ],
@@ -450,90 +700,99 @@ class _MainScanButton extends StatelessWidget {
   }
 }
 
-class _ScanModeSheet extends StatelessWidget {
+/// Select box (drop-down) for the reading mode. Screen readers hear "Reading mode, Automatic, drop-down list" and
+/// open it with a normal double-tap; the label is visible text above the box.
+class _ModeSelect extends StatelessWidget {
+  final _ScanMode value;
   final bool isConnected;
-  final _ScanMode selected;
-  const _ScanModeSheet({required this.isConnected, required this.selected});
+  final ValueChanged<_ScanMode> onChanged;
 
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(
-          AppSpacing.lg,
-          AppSpacing.md,
-          AppSpacing.lg,
-          AppSpacing.md,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Reading mode', style: context.text.headlineSmall),
-            const SizedBox(height: AppSpacing.sm),
-            _ModeOption(
-              icon: Icons.auto_awesome_outlined,
-              title: 'Automatic',
-              subtitle:
-                  'Uses the server when signed in & online, otherwise reads on-device',
-              selected: selected == _ScanMode.automatic,
-              onTap: () => Navigator.pop(context, _ScanMode.automatic),
-            ),
-            _ModeOption(
-              icon: isConnected
-                  ? Icons.cloud_outlined
-                  : Icons.cloud_off_outlined,
-              title: 'Online',
-              subtitle: 'Server-side reading — faster, supports multiple images',
-              enabled: isConnected,
-              selected: selected == _ScanMode.online,
-              onTap: () => Navigator.pop(context, _ScanMode.online),
-            ),
-            _ModeOption(
-              icon: Icons.phone_android_outlined,
-              title: 'Offline',
-              subtitle: 'On-device reading — private, works without internet',
-              selected: selected == _ScanMode.offline,
-              onTap: () => Navigator.pop(context, _ScanMode.offline),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ModeOption extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool enabled;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _ModeOption({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-    this.enabled = true,
-    this.selected = false,
+  const _ModeSelect({
+    required this.value,
+    required this.isConnected,
+    required this.onChanged,
   });
 
+  bool _enabled(_ScanMode m) => m != _ScanMode.online || isConnected;
+
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: enabled ? 1 : 0.5,
-      child: ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: Icon(icon, color: context.accent),
-        title: Text(title, style: context.text.titleMedium),
-        subtitle: Text(subtitle, style: context.text.bodyMedium),
-        trailing: selected
-            ? Icon(Icons.check_circle_rounded, color: context.accent, size: 20)
-            : null,
-        selected: selected,
-        onTap: enabled ? onTap : null,
+    return Semantics(
+      container: true,
+      label: 'Reading mode',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ExcludeSemantics(
+            child: Text('Reading mode', style: context.text.labelLarge),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(minHeight: 56),
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+            decoration: BoxDecoration(
+              color: context.bgSurface,
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              border: Border.all(color: context.borderStrong, width: 1.5),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<_ScanMode>(
+                value: value,
+                isExpanded: true,
+                itemHeight: null, // let two-line items size themselves
+                dropdownColor: context.bgSurface,
+                icon: Icon(
+                  Icons.arrow_drop_down_rounded,
+                  color: context.textPrimary,
+                  size: 30,
+                ),
+                // Closed box shows just the name; the open menu adds details.
+                selectedItemBuilder: (_) => [
+                  for (final m in _ScanMode.values)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(m.label, style: context.text.bodyLarge),
+                    ),
+                ],
+                items: [
+                  for (final m in _ScanMode.values)
+                    DropdownMenuItem(
+                      value: m,
+                      enabled: _enabled(m),
+                      child: Opacity(
+                        opacity: _enabled(m) ? 1 : 0.5,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(m.label, style: context.text.titleMedium),
+                              Text(
+                                _enabled(m)
+                                    ? m.subtitle
+                                    : 'Needs an internet connection',
+                                style: context.text.bodyMedium,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+                onChanged: (m) {
+                  if (m == null || m == value) return;
+                  onChanged(m);
+                  SemanticsService.announce(
+                    'Reading mode set to ${m.label}',
+                    TextDirection.ltr,
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -549,26 +808,31 @@ class _ScanHistoryButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       button: true,
-      label: 'Scan history',
-      child: GestureDetector(
+      label: 'Scan history. Click to view your recent scans.',
+      excludeSemantics: true,
+      onTap: onTap,
+      child: InkWell(
         onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.md),
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 14),
+          constraints: const BoxConstraints(minHeight: 64),
+          padding: const EdgeInsets.symmetric(vertical: 18),
           decoration: BoxDecoration(
             color: context.bgSurfaceHigh,
             borderRadius: BorderRadius.circular(AppRadius.md),
-            border: Border.all(color: context.border),
+            border: Border.all(color: context.borderStrong, width: 1.5),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.history_rounded, size: 18, color: context.textMuted),
-              const SizedBox(width: 8),
+              Icon(Icons.history_rounded, size: 26, color: context.textPrimary),
+              const SizedBox(width: 10),
               Text(
                 'Scan History',
                 style: context.text.labelLarge?.copyWith(
                   color: context.textPrimary,
+                  fontSize: 18,
                 ),
               ),
             ],

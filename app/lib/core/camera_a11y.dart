@@ -1,6 +1,12 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
+import 'package:vol_spotter/vol_spotter.dart';
+
+import 'app_theme.dart';
 
 /// Spoken + haptic feedback for the camera screens.
 ///
@@ -50,6 +56,42 @@ class ScanFeedback {
   void success() => HapticFeedback.mediumImpact();
 }
 
+/// Lets either hardware volume button act as the shutter, so a person who
+/// can't find the on-screen button can still take the photo.
+///
+/// Uses `vol_spotter` with interception on, so the press doesn't also change
+/// the system volume / show the volume HUD while the camera is open. Call
+/// [stop] in `dispose` to give the volume keys back.
+class VolumeShutter {
+  final _spotter = const VolSpotter();
+  StreamSubscription<ButtonEvent>? _sub;
+
+  Future<void> start(VoidCallback onPress) async {
+    try {
+      await _spotter.startListening(
+        config: const VolSpotterConfig(interceptVolumeEvents: true),
+      );
+      _sub = _spotter.buttonEvents.listen((event) {
+        // Android also emits "released"; iOS only "pressed".
+        if (event.action is! ButtonPressed) return;
+        if (event.button is VolumeUpButton || event.button is VolumeDownButton) {
+          onPress();
+        }
+      });
+    } catch (e) {
+      debugPrint('Volume shutter unavailable: $e');
+    }
+  }
+
+  Future<void> stop() async {
+    await _sub?.cancel();
+    _sub = null;
+    try {
+      await _spotter.stopListening();
+    } catch (_) {}
+  }
+}
+
 /// A large, labelled camera control: icon with a *visible* text label
 /// underneath (no icon-only buttons), a ≥72dp touch target, and a proper
 /// button/toggle role for screen readers.
@@ -77,7 +119,7 @@ class CameraLabeledButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = onPressed != null;
-    final color = enabled ? Colors.white : Colors.white54;
+    final color = enabled ? context.textPrimary : context.textMuted;
     return Semantics(
       button: true,
       enabled: enabled,
@@ -92,24 +134,25 @@ class CameraLabeledButton extends StatelessWidget {
           constraints: const BoxConstraints(minWidth: 72, minHeight: 72),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
+            color: context.bgSurface,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: toggled == true ? Colors.white : Colors.transparent,
-              width: 2,
+              color: toggled == true ? context.accentStrong : context.borderStrong,
+              width: toggled == true ? 3 : 1.5,
             ),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, color: color, size: 30),
+              Icon(icon, color: color, size: 32),
               const SizedBox(height: 4),
               Text(
                 label,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: color,
-                  fontSize: 14,
+                  fontSize: 16,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -129,8 +172,11 @@ class ShutterButton extends StatelessWidget {
     required this.busy,
     this.label = 'Capture',
     this.semanticsLabel = 'Capture page',
+    this.focusNode,
   });
 
+  /// Lets the screen put screen-reader focus on the shutter when it opens.
+  final FocusNode? focusNode;
   final VoidCallback? onPressed;
   final bool busy;
   final String label;
@@ -138,7 +184,7 @@ class ShutterButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
+    final core = Semantics(
       button: true,
       enabled: onPressed != null,
       label: busy ? 'Processing' : semanticsLabel,
@@ -155,29 +201,29 @@ class ShutterButton extends StatelessWidget {
               height: 84,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: Colors.white,
-                border: Border.all(color: Colors.white54, width: 5),
+                color: context.textPrimary,
+                border: Border.all(color: context.accentStrong, width: 5),
               ),
               child: busy
-                  ? const Padding(
-                      padding: EdgeInsets.all(26),
+                  ? Padding(
+                      padding: const EdgeInsets.all(26),
                       child: CircularProgressIndicator(
                         strokeWidth: 3,
-                        color: Colors.black,
+                        color: context.bgPage,
                       ),
                     )
-                  : const Icon(
+                  : Icon(
                       Icons.camera_alt_rounded,
-                      color: Colors.black,
-                      size: 36,
+                      color: context.bgPage,
+                      size: 38,
                     ),
             ),
             const SizedBox(height: 4),
             Text(
               label,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
+              style: TextStyle(
+                color: context.textPrimary,
+                fontSize: 16,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -185,6 +231,9 @@ class ShutterButton extends StatelessWidget {
         ),
       ),
     );
+    return focusNode == null
+        ? core
+        : Focus(focusNode: focusNode, child: core);
   }
 }
 
@@ -207,19 +256,19 @@ class CameraStatusBar extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
+          color: context.bgSurface,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.white38),
+          border: Border.all(color: context.borderStrong, width: 1.5),
         ),
         child: Row(
           children: [
-            Icon(icon, color: Colors.white, size: 26),
+            Icon(icon, color: context.textPrimary, size: 28),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
                 text,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: context.textPrimary,
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
                   height: 1.25,
@@ -245,8 +294,12 @@ class CameraErrorView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const ExcludeSemantics(
-              child: Icon(Icons.error_outline, color: Colors.white, size: 48),
+            ExcludeSemantics(
+              child: Icon(
+                Icons.error_outline,
+                color: context.textPrimary,
+                size: 48,
+              ),
             ),
             const SizedBox(height: 16),
             Semantics(
@@ -254,7 +307,7 @@ class CameraErrorView extends StatelessWidget {
               child: Text(
                 message,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 18),
+                style: TextStyle(color: context.textPrimary, fontSize: 18),
               ),
             ),
             const SizedBox(height: 24),
@@ -262,8 +315,8 @@ class CameraErrorView extends StatelessWidget {
               height: 56,
               child: FilledButton(
                 style: FilledButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
+                  backgroundColor: context.textPrimary,
+                  foregroundColor: context.bgPage,
                   padding: const EdgeInsets.symmetric(horizontal: 32),
                 ),
                 onPressed: () => Navigator.of(context).pop(),

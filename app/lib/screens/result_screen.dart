@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -17,6 +18,7 @@ import '../services/tflite_service.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../core/bbox_painter.dart';
+import '../core/scan_ui.dart';
 
 class ResultScreen extends StatefulWidget {
   final File imageFile;
@@ -54,13 +56,23 @@ class ResultScreen extends StatefulWidget {
   State<ResultScreen> createState() => _ResultScreenState();
 }
 
-class _ResultScreenState extends State<ResultScreen>
-    with SingleTickerProviderStateMixin {
+class _ResultScreenState extends State<ResultScreen> {
   late BrailleLanguage _language;
-  late TabController _tabs;
+  bool _showImage = false;
   bool _showBBoxes = true;
+  bool _copied = false;
   final GlobalKey _imageRepaintKey = GlobalKey();
   double? _imgW, _imgH;
+
+  /// True until the person does anything on this screen. While true, the text
+  /// node's spoken label starts with "Scan successful." so the very first
+  /// thing a screen-reader user hears is the outcome, then the text itself.
+  bool _introPending = true;
+
+  /// Receives screen-reader focus once the screen has finished opening (and
+  /// after a re-read), so the person lands directly on the result text
+  /// instead of the Back button.
+  final FocusNode _textFocus = FocusNode(debugLabel: 'resultText');
 
   // Current (possibly re-run) results.
   late List<Detection> _detections;
@@ -83,14 +95,54 @@ class _ResultScreenState extends State<ResultScreen>
   void initState() {
     super.initState();
     _language = widget.initialLanguage;
-    _tabs = TabController(length: 2, vsync: this);
     _detections = widget.detections;
     _lines = widget.lines;
     _cachedText = widget.cachedText;
     _uploadedImageId = widget.uploadedImageId;
     _setupTts();
     _initConnectivity();
+    _focusTextAfterTransition();
+    HapticFeedback.mediumImpact(); // result is ready
   }
+
+  void _focusText() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _textFocus.requestFocus();
+    });
+  }
+
+  /// On first open, wait for the route transition to finish. Requesting focus
+  /// earlier loses to the route's own focus handling and to TalkBack's
+  /// "first element" (Back) focus.
+  void _focusTextAfterTransition() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final anim = ModalRoute.of(context)?.animation;
+
+      void go() {
+        // Small extra delay so we land after the route's own focus grab.
+        Future.delayed(const Duration(milliseconds: 250), () {
+          if (mounted && !_showImage) _textFocus.requestFocus();
+        });
+      }
+
+      if (anim == null || anim.isCompleted) {
+        go();
+        return;
+      }
+      void listener(AnimationStatus s) {
+        if (s == AnimationStatus.completed) {
+          anim.removeStatusListener(listener);
+          go();
+        }
+      }
+
+      anim.addStatusListener(listener);
+    });
+  }
+
+  void _announce(String message) =>
+      SemanticsService.announce(message, TextDirection.ltr);
 
   Future<void> _initConnectivity() async {
     final results = await Connectivity().checkConnectivity();
@@ -142,7 +194,7 @@ class _ResultScreenState extends State<ResultScreen>
   @override
   void dispose() {
     _tts.stop();
-    _tabs.dispose();
+    _textFocus.dispose();
     _connectivitySub?.cancel();
     super.dispose();
   }
@@ -209,7 +261,7 @@ class _ResultScreenState extends State<ResultScreen>
   /// turns single line breaks into a plain space so the line is read
   /// serially. The swap is 1-for-1 (one char in, one char out) so the
   /// character offsets `setProgressHandler` reports still line up with the
-  /// original `text` used for the on-screen highlight in `_TextTab`.
+  /// original `text` used for the on-screen highlight in `_TextView`.
   String _prepareSpeechText(String text) {
     final buffer = StringBuffer();
     int i = 0;
@@ -270,7 +322,9 @@ class _ResultScreenState extends State<ResultScreen>
     final choice = await _pickRerunMode();
     if (choice == null) return; // cancelled
 
+    _introPending = false;
     setState(() => _rerunning = true);
+    _announce('Reading braille again. Please wait.');
     try {
       final result = choice == InferenceModeChoice.offline
           ? await BrailleReaderService.instance.readOffline(widget.imageFile.path)
@@ -282,9 +336,15 @@ class _ResultScreenState extends State<ResultScreen>
         _cachedText = result.extractedText;
         _rerunning = false;
       });
+      final empty = _buildText().trim().isEmpty;
+      _announce(empty
+          ? 'Read again finished. No braille text was detected.'
+          : 'Read again finished. The text has been updated.');
+      if (!_showImage) _focusText();
     } catch (e) {
       if (mounted) {
         setState(() => _rerunning = false);
+        _announce('Could not read braille again.');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Could not read braille again: $e')),
         );
@@ -372,210 +432,247 @@ class _ResultScreenState extends State<ResultScreen>
     );
   }
 
+  // ── actions ─────────────────────────────────────────────────────────────
+
+  Future<void> _pickLanguage() async {
+    _introPending = false;
+    final picked = await showLanguageSheet(context, _language);
+    if (!mounted || picked == null || picked == _language) return;
+    setState(() => _language = picked);
+    _announce('Language changed to ${picked.label}. Text updated.');
+  }
+
+  void _toggleView() {
+    _introPending = false;
+    setState(() => _showImage = !_showImage);
+    if (_showImage) {
+      _announce('Image output shown.');
+    } else {
+      _announce('Text output shown.');
+      _focusText();
+    }
+  }
+
+  Future<void> _share(String text) async {
+    _introPending = false;
+    if (_showImage) {
+      await _shareAnnotatedImage();
+    } else if (text.trim().isNotEmpty) {
+      await _shareText(text);
+    }
+  }
+
+  Future<void> _copy(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    setState(() => _copied = true);
+    _announce('Text copied to clipboard.');
+    await Future.delayed(const Duration(seconds: 2));
+    if (mounted) setState(() => _copied = false);
+  }
+
   // ── build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final text = _buildText();
+    final empty = text.trim().isEmpty;
+
+    final lineCount =
+        text.split('\n').where((l) => l.trim().isNotEmpty).length;
+    final intro = !_introPending
+        ? ''
+        : (empty
+            ? 'Scan complete. No braille text was detected. '
+            : 'Scan successful. $lineCount ${lineCount == 1 ? 'line' : 'lines'} '
+                'of text. ');
+    final textLabel = empty
+        ? '${intro}No braille text detected.'
+        : '${intro}Detected braille text. $text';
+
+    final maxPanelHeight = MediaQuery.of(context).size.height * 0.5;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Result'),
-        actions: [
-          _LanguagePicker(
-            value: _language,
-            onChanged: (l) => setState(() => _language = l),
+        // Standard back button. The title is hidden from screen readers so a
+        // left swipe from the text lands straight on "Back".
+        leading: const BackButton(),
+        title: ExcludeSemantics(child: Text(_showImage ? 'Result: image' : 'Result: text')),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: _showImage
+                ? _ImageView(
+                    imageFile: widget.imageFile,
+                    detections: _detections,
+                    lines: _lines,
+                    language: _language,
+                    imgW: _imgW,
+                    imgH: _imgH,
+                    showBBoxes: _showBBoxes,
+                    annotationColor: Color.lerp(context.accent, Colors.black, 0.35)!,
+                    onToggleBBoxes: (v) => setState(() => _showBBoxes = v),
+                    onImageLoaded: _onImageLoaded,
+                    repaintKey: _imageRepaintKey,
+                  )
+                : _TextView(
+                    text: text,
+                    a11yLabel: textLabel,
+                    focusNode: _textFocus,
+                    speaking: _speaking,
+                    highlightStart: _highlightStart,
+                    highlightEnd: _highlightEnd,
+                  ),
           ),
-          AnimatedBuilder(
-            animation: _tabs,
-            builder: (_, __) {
-              final onImageTab = _tabs.index == 1;
-              return IconButton(
-                icon: const Icon(Icons.share_rounded, size: 20),
-                tooltip: onImageTab ? 'Share image' : 'Share text',
-                onPressed: onImageTab
-                    ? _shareAnnotatedImage
-                    : (text.trim().isEmpty ? null : () => _shareText(text)),
-              );
-            },
+          if (_rerunning) const _StatusLine(label: 'Reading braille again…'),
+          // Controls, in swipe order: Language → Read aloud → Share →
+          // Switch view → Run again → Copy.
+          ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxPanelHeight),
+            child: SingleChildScrollView(
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg, AppSpacing.sm, AppSpacing.lg, AppSpacing.lg,
+                  ),
+                  child: Column(
+                    children: [
+                      // Swipe / reading order: Share, Copy, Language,
+                      // Read aloud, Switch view, Run again.
+                      Row(children: [
+                        Expanded(
+                          child: ActionButton(
+                            icon: Icons.share_rounded,
+                            label: _showImage ? 'Share image' : 'Share text',
+                            onTap: (!_showImage && empty) ? null : () => _share(text),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ActionButton(
+                            icon: _copied ? Icons.check_rounded : Icons.copy_rounded,
+                            label: _copied ? 'Copied' : 'Copy text',
+                            active: _copied,
+                            onTap: empty ? null : () => _copy(text),
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 12),
+                      Row(children: [
+                        Expanded(
+                          child: ActionButton(
+                            icon: Icons.language_rounded,
+                            label: 'Language: ${_language.label}',
+                            semanticsLabel:
+                                'Language selector. Select the language written '
+                                'on the braille page. Currently ${_language.label}.',
+                            onTap: _pickLanguage,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ActionButton(
+                            icon: _speaking
+                                ? Icons.stop_circle_outlined
+                                : Icons.volume_up_rounded,
+                            label: _speaking ? 'Stop reading' : 'Read aloud',
+                            active: _speaking,
+                            onTap: empty
+                                ? null
+                                : () {
+                                    _introPending = false;
+                                    _toggleReadAloud(text);
+                                  },
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 12),
+                      Row(children: [
+                        Expanded(
+                          child: ActionButton(
+                            icon: _showImage
+                                ? Icons.text_fields_rounded
+                                : Icons.image_outlined,
+                            label: _showImage
+                                ? 'Switch to Text Output'
+                                : 'Switch to Image Output',
+                            onTap: _toggleView,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ActionButton(
+                            icon: Icons.refresh_rounded,
+                            label: 'Run again',
+                            semanticsLabel: 'Read braille again',
+                            onTap: _rerunning ? null : _runAgain,
+                          ),
+                        ),
+                      ]),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
-          const SizedBox(width: 4),
         ],
-        bottom: TabBar(
-          controller: _tabs,
-          tabs: const [
-            Tab(text: 'Text'),
-            Tab(text: 'Image'),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// "Reading braille again…" status text (shown between content and controls)
+// ---------------------------------------------------------------------------
+class _StatusLine extends StatelessWidget {
+  final String label;
+  const _StatusLine({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      liveRegion: true,
+      label: label,
+      excludeSemantics: true,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: context.accent),
+            ),
+            const SizedBox(width: 12),
+            Text(label, style: context.text.bodyLarge),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabs,
-        children: [
-          _TextTab(
-            text: text,
-            speaking: _speaking,
-            highlightStart: _highlightStart,
-            highlightEnd: _highlightEnd,
-            onReadAloud: () => _toggleReadAloud(text),
-            rerunning: _rerunning,
-            onRunAgain: _runAgain,
-          ),
-          _ImageTab(
-            imageFile: widget.imageFile,
-            detections: _detections,
-            lines: _lines,
-            language: _language,
-            imgW: _imgW,
-            imgH: _imgH,
-            showBBoxes: _showBBoxes,
-            annotationColor: Color.lerp(context.accent, Colors.black, 0.35)!,
-            onToggleBBoxes: (v) => setState(() => _showBBoxes = v),
-            onImageLoaded: _onImageLoaded,
-            repaintKey: _imageRepaintKey,
-            speaking: _speaking,
-            onReadAloud: () => _toggleReadAloud(text),
-            hasText: text.trim().isNotEmpty,
-            rerunning: _rerunning,
-            onRunAgain: _runAgain,
-          ),
-        ],
-      ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Read-aloud bottom bar (shared by both tabs)
+// Text output
 // ---------------------------------------------------------------------------
-class _ReadAloudBar extends StatelessWidget {
-  final bool speaking;
-  final bool enabled;
-  final VoidCallback onTap;
-
-  const _ReadAloudBar({
-    required this.speaking,
-    required this.onTap,
-    this.enabled = true,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: speaking ? 'Stop reading aloud' : 'Read aloud',
-      child: GestureDetector(
-        onTap: enabled ? onTap : null,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: speaking
-                ? context.accent.withOpacity(0.12)
-                : (enabled ? context.bgSurface : context.bgSurfaceHigh),
-            borderRadius: BorderRadius.circular(AppRadius.md),
-            border: Border.all(
-              color: speaking ? context.accent.withOpacity(0.4) : context.border,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                speaking ? Icons.stop_circle_outlined : Icons.volume_up_rounded,
-                color: enabled
-                    ? (speaking ? context.accent : context.textMuted)
-                    : context.textDisabled,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                speaking ? 'Stop reading' : 'Read aloud',
-                style: context.text.labelLarge?.copyWith(
-                  color: enabled
-                      ? (speaking ? context.accent : context.textMuted)
-                      : context.textDisabled,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Run-again bottom bar (shared by both tabs)
-// ---------------------------------------------------------------------------
-class _RunAgainBar extends StatelessWidget {
-  final bool rerunning;
-  final VoidCallback onTap;
-
-  const _RunAgainBar({required this.rerunning, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: 'Read braille again',
-      child: GestureDetector(
-        onTap: rerunning ? null : onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: context.bgSurface,
-            borderRadius: BorderRadius.circular(AppRadius.md),
-            border: Border.all(color: context.border),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (rerunning)
-                SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: context.accent,
-                  ),
-                )
-              else
-                Icon(Icons.refresh_rounded, color: context.textMuted, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'Run again',
-                style: context.text.labelLarge?.copyWith(color: context.textMuted),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Text tab
-// ---------------------------------------------------------------------------
-class _TextTab extends StatelessWidget {
+class _TextView extends StatelessWidget {
   final String text;
+  final String a11yLabel;
+  final FocusNode focusNode;
   final bool speaking;
   final int highlightStart;
   final int highlightEnd;
-  final VoidCallback onReadAloud;
-  final bool rerunning;
-  final VoidCallback onRunAgain;
 
-  const _TextTab({
+  const _TextView({
     required this.text,
+    required this.a11yLabel,
+    required this.focusNode,
     required this.speaking,
     required this.highlightStart,
     required this.highlightEnd,
-    required this.onReadAloud,
-    required this.rerunning,
-    required this.onRunAgain,
   });
 
   List<TextSpan> _spans(BuildContext context) {
@@ -588,9 +685,7 @@ class _TextTab extends StatelessWidget {
         highlightStart >= 0 &&
         highlightEnd > highlightStart &&
         highlightEnd <= text.length;
-    if (!hasHighlight) {
-      return [TextSpan(text: text, style: baseStyle)];
-    }
+    if (!hasHighlight) return [TextSpan(text: text, style: baseStyle)];
     return [
       TextSpan(text: text.substring(0, highlightStart), style: baseStyle),
       TextSpan(
@@ -607,78 +702,45 @@ class _TextTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final empty = text.trim().isEmpty;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: empty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.text_fields_rounded,
-                        size: 40,
-                        color: context.textDisabled,
-                      ),
-                      const SizedBox(height: 14),
-                      Text(
-                        'No text detected',
-                        style: context.text.titleMedium?.copyWith(
-                          color: context.textMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                )
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(AppSpacing.lg),
-                  child: Semantics(
-                    label: 'Detected braille text',
-                    child: SelectableText.rich(
-                      TextSpan(children: _spans(context)),
-                    ),
-                  ),
-                ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.lg,
-            0,
-            AppSpacing.lg,
-            AppSpacing.xl,
-          ),
-          child: Column(
+    final Widget visual = empty
+        ? Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              _RunAgainBar(rerunning: rerunning, onTap: onRunAgain),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _ReadAloudBar(
-                      speaking: speaking,
-                      enabled: !empty,
-                      onTap: onReadAloud,
-                    ),
-                  ),
-                  if (!empty) ...[
-                    const SizedBox(width: 12),
-                    _CopyButton(text: text),
-                  ],
-                ],
+              Icon(Icons.text_fields_rounded, size: 40, color: context.textDisabled),
+              const SizedBox(height: 14),
+              Text(
+                'No text detected',
+                style: context.text.titleMedium?.copyWith(color: context.textMuted),
               ),
             ],
-          ),
+          )
+        : SelectableText.rich(TextSpan(children: _spans(context)));
+
+    // One merged, focusable node: the first screen-reader focus lands here
+    // and reads "Scan successful. Detected braille text. <text>".
+    final node = MergeSemantics(
+      child: Focus(
+        focusNode: focusNode,
+        child: Semantics(
+          label: a11yLabel,
+          child: ExcludeSemantics(child: visual),
         ),
-      ],
+      ),
     );
+
+    return empty
+        ? Center(child: node)
+        : SingleChildScrollView(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: node,
+          );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Image tab
+// Image output
 // ---------------------------------------------------------------------------
-class _ImageTab extends StatelessWidget {
+class _ImageView extends StatelessWidget {
   final File imageFile;
   final List<Detection> detections;
   final List<BrailleLine> lines;
@@ -689,13 +751,8 @@ class _ImageTab extends StatelessWidget {
   final ValueChanged<bool> onToggleBBoxes;
   final void Function(ImageInfo, bool) onImageLoaded;
   final GlobalKey repaintKey;
-  final bool speaking;
-  final VoidCallback onReadAloud;
-  final bool hasText;
-  final bool rerunning;
-  final VoidCallback onRunAgain;
 
-  const _ImageTab({
+  const _ImageView({
     required this.imageFile,
     required this.detections,
     required this.lines,
@@ -707,11 +764,6 @@ class _ImageTab extends StatelessWidget {
     required this.onToggleBBoxes,
     required this.onImageLoaded,
     required this.repaintKey,
-    required this.speaking,
-    required this.onReadAloud,
-    required this.hasText,
-    required this.rerunning,
-    required this.onRunAgain,
   });
 
   @override
@@ -721,203 +773,82 @@ class _ImageTab extends StatelessWidget {
         .resolve(const ImageConfiguration())
         .addListener(ImageStreamListener(onImageLoaded));
 
-    // Always paint the CustomPaint layer so labels are always visible.
-    // showBBoxes is forwarded to BBoxPainter which only uses it for strokes.
     final showPainter = detections.isNotEmpty && imgW != null && imgH != null;
 
     return Column(
       children: [
-        // ── Toggle bar ──────────────────────────────────────────────────
         Padding(
           padding: const EdgeInsets.symmetric(
             horizontal: AppSpacing.lg,
             vertical: AppSpacing.sm,
           ),
-          child: Row(
-            children: [
-              Icon(Icons.grid_on_rounded, size: 16, color: context.textMuted),
-              const SizedBox(width: 8),
-              Text(
-                'Bounding boxes',
-                style: context.text.bodyMedium?.copyWith(
-                  color: context.textMuted,
-                ),
-              ),
-              const Spacer(),
-              Icon(Icons.pinch_outlined, size: 16, color: context.textMuted),
-              const SizedBox(width: 6),
-              Text(
-                'Pinch to zoom',
-                style: context.text.bodyMedium?.copyWith(
-                  color: context.textMuted,
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Switch.adaptive(
-                value: showBBoxes,
-                onChanged: onToggleBBoxes,
-                activeColor: context.accent,
-              ),
-            ],
-          ),
-        ),
-        // ── Image (zoomable) ────────────────────────────────────────────
-        Expanded(
-          child: InteractiveViewer(
-            minScale: 1.0,
-            maxScale: 5.0,
-            child: RepaintBoundary(
-              key: repaintKey,
-              child: Stack(
-                children: [
-                  Positioned.fill(child: image),
-                  if (showPainter)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: BBoxPainter(
-                          detections: detections,
-                          lines: lines,
-                          language: language,
-                          imageWidth: imgW!,
-                          imageHeight: imgH!,
-                          fit: BoxFit.contain,
-                          showBoxes: showBBoxes, // ← boxes only toggle
-                          annotationColor: annotationColor,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        // ── Run again / Read aloud bars ─────────────────────────────────
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.lg,
-            AppSpacing.sm,
-            AppSpacing.lg,
-            AppSpacing.lg,
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: _RunAgainBar(rerunning: rerunning, onTap: onRunAgain),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _ReadAloudBar(
-                  speaking: speaking,
-                  enabled: hasText,
-                  onTap: onReadAloud,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Language picker
-// ---------------------------------------------------------------------------
-class _LanguagePicker extends StatelessWidget {
-  final BrailleLanguage value;
-  final ValueChanged<BrailleLanguage> onChanged;
-  const _LanguagePicker({required this.value, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return DropdownButtonHideUnderline(
-      child: DropdownButton<BrailleLanguage>(
-        value: value,
-        dropdownColor: context.bgSurface,
-        icon: Icon(Icons.language, color: context.textMuted, size: 18),
-        style: context.text.bodyMedium,
-        items: BrailleLanguage.values.map((l) {
-          return DropdownMenuItem<BrailleLanguage>(
-            value: l,
-            enabled: l.isEnabled,
-            child: Text(
-              l.label,
-              style: TextStyle(
-                color: l.isEnabled ? context.textPrimary : context.textDisabled,
-              ),
-            ),
-          );
-        }).toList(),
-        onChanged: (l) {
-          if (l != null && l.isEnabled) onChanged(l);
-        },
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Copy button
-// ---------------------------------------------------------------------------
-class _CopyButton extends StatefulWidget {
-  final String text;
-  const _CopyButton({required this.text});
-
-  @override
-  State<_CopyButton> createState() => _CopyButtonState();
-}
-
-class _CopyButtonState extends State<_CopyButton> {
-  bool _copied = false;
-
-  Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: widget.text));
-    setState(() => _copied = true);
-    await Future.delayed(const Duration(seconds: 2));
-    if (mounted) setState(() => _copied = false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Semantics(
-        button: true,
-        label: _copied ? 'Copied to clipboard' : 'Copy text to clipboard',
-        child: GestureDetector(
-          onTap: _copy,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            decoration: BoxDecoration(
-              color: _copied
-                  ? context.accent.withOpacity(0.12)
-                  : context.bgSurface,
-              borderRadius: BorderRadius.circular(AppRadius.md),
-              border: Border.all(
-                color: _copied ? context.accent.withOpacity(0.4) : context.border,
-              ),
-            ),
+          child: Semantics(
+            toggled: showBBoxes,
+            label: 'Show bounding boxes',
+            excludeSemantics: true,
+            onTap: () => onToggleBBoxes(!showBBoxes),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
-                  _copied ? Icons.check_rounded : Icons.copy_rounded,
-                  color: _copied ? context.accent : context.textMuted,
-                  size: 18,
-                ),
+                Icon(Icons.grid_on_rounded, size: 16, color: context.textMuted),
                 const SizedBox(width: 8),
                 Text(
-                  _copied ? 'Copied' : 'Copy text',
-                  style: context.text.labelLarge?.copyWith(
-                    color: _copied ? context.accent : context.textMuted,
-                  ),
+                  'Bounding boxes',
+                  style: context.text.bodyMedium?.copyWith(color: context.textMuted),
+                ),
+                const Spacer(),
+                Icon(Icons.pinch_outlined, size: 16, color: context.textMuted),
+                const SizedBox(width: 6),
+                Text(
+                  'Pinch to zoom',
+                  style: context.text.bodyMedium
+                      ?.copyWith(color: context.textMuted, fontSize: 12),
+                ),
+                const SizedBox(width: 12),
+                Switch.adaptive(
+                  value: showBBoxes,
+                  onChanged: onToggleBBoxes,
+                  activeColor: context.accent,
                 ),
               ],
             ),
           ),
         ),
-      ),
+        Expanded(
+          child: Semantics(
+            image: true,
+            label: 'Scanned page with ${detections.length} detected braille '
+                'cells outlined. Use Switch to Text Output to read the text.',
+            excludeSemantics: true,
+            child: InteractiveViewer(
+              minScale: 1.0,
+              maxScale: 5.0,
+              child: RepaintBoundary(
+                key: repaintKey,
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: image),
+                    if (showPainter)
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: BBoxPainter(
+                            detections: detections,
+                            lines: lines,
+                            language: language,
+                            imageWidth: imgW!,
+                            imageHeight: imgH!,
+                            fit: BoxFit.contain,
+                            showBoxes: showBBoxes,
+                            annotationColor: annotationColor,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
